@@ -1,0 +1,9 @@
+/target
+/ri-cli/target
+/ri-web/target
+/ri-web/frontend/node_modules
+/ri-web/frontend/dist
+*.swp
+*.swo
+.DS_Store
+.idea/

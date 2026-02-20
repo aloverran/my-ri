@@ -1,0 +1,3 @@
+[submodule "ri-core"]
+	path = ri-core
+	url = https://github.com/aloverran/ri.git

@@ -1,0 +1,196 @@
+//! Agent loop: call LLM, execute tools, persist messages, repeat.
+//!
+//! This is application-level composition of ri primitives (Turn, Tool,
+//! SessionStore). It returns a stream of AgentEvents so the caller can
+//! drive display, logging, or RPC output with plain iteration.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use async_stream::stream;
+use futures::Stream;
+
+use ri::{
+    ContentBlock, JsonMap, LlmProvider, Message, Model, Provenance,
+    RequestOptions, Role, SessionStore, StreamEvent, ThinkingLevel,
+    Tool, ToolOutput, ToolSchema,
+};
+use ri_ai::Turn;
+
+/// Events yielded by the agent loop.
+#[derive(Debug, Clone)]
+pub enum AgentEvent {
+    /// A raw stream event from the LLM provider.
+    Stream(StreamEvent),
+    /// A tool is about to be executed.
+    ToolStart { id: String, name: String },
+    /// A tool has finished executing.
+    ToolEnd { id: String, output: String, is_error: bool },
+    /// A message (assistant or tool-result) has been fully constructed and persisted.
+    MessageComplete(Message),
+    /// A non-fatal error occurred.
+    Error(String),
+}
+
+/// Persist a user message and start the agent loop. This is the standard
+/// entry point -- it creates the user message, writes it to the store,
+/// then delegates to `run`.
+pub fn submit<'a>(
+    text: &str,
+    provider: &'a dyn LlmProvider,
+    model: &'a Model,
+    system_prompt: &'a str,
+    tools: &'a [Box<dyn Tool>],
+    store: &'a mut SessionStore,
+    message_ids: &'a mut Vec<String>,
+    cwd: &'a Path,
+    thinking: ThinkingLevel,
+    cancel: tokio_util::sync::CancellationToken,
+) -> eyre::Result<impl Stream<Item = AgentEvent> + 'a> {
+    let user_id = store.next_id();
+    let user_msg = Message::new(user_id.clone(), Role::User, vec![ContentBlock::text(text)]);
+    store.write_message(user_msg)?;
+    message_ids.push(user_id);
+
+    Ok(run(provider, model, system_prompt, tools, store, message_ids, cwd, thinking, None, cancel))
+}
+
+/// Run the agent loop: stream LLM response, execute tool calls, persist
+/// everything, repeat until the model stops issuing tool calls.
+///
+/// Yields `AgentEvent`s for the caller to observe. Fatal errors stop the
+/// stream after yielding an `AgentEvent::Error`.
+fn run<'a>(
+    provider: &'a dyn LlmProvider,
+    model: &'a Model,
+    system_prompt: &'a str,
+    tools: &'a [Box<dyn Tool>],
+    store: &'a mut SessionStore,
+    message_ids: &'a mut Vec<String>,
+    cwd: &'a Path,
+    thinking: ThinkingLevel,
+    max_tokens: Option<usize>,
+    cancel: tokio_util::sync::CancellationToken,
+) -> impl Stream<Item = AgentEvent> + 'a {
+    stream! {
+        let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
+        let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
+            .map(|t| (t.name(), t.as_ref()))
+            .collect();
+
+        loop {
+            if cancel.is_cancelled() { break; }
+
+            // Resolve messages from the pool for this turn.
+            let input_ids: Vec<String> = message_ids.clone();
+            let messages: Vec<Message> = store.pool.resolve_existing(&input_ids)
+                .into_iter()
+                .cloned()
+                .collect();
+
+            let opts = RequestOptions {
+                model: model.clone(),
+                system_prompt: system_prompt.to_string(),
+                messages,
+                tools: tool_schemas.clone(),
+                thinking,
+                max_tokens,
+            };
+
+            // Start the LLM turn.
+            let mut turn = match Turn::start(provider, opts).await {
+                Ok(t) => t,
+                Err(e) => {
+                    yield AgentEvent::Error(e.to_string());
+                    break;
+                }
+            };
+
+            // Stream events to the caller and let Turn accumulate internally.
+            while let Some(result) = turn.next().await {
+                if cancel.is_cancelled() { break; }
+                match result {
+                    Ok(evt) => yield AgentEvent::Stream(evt),
+                    Err(e) => {
+                        yield AgentEvent::Error(e.to_string());
+                        break;
+                    }
+                }
+            }
+
+            let (content, usage) = turn.finish();
+
+            // Build and persist the assistant message.
+            let assistant_id = store.next_id();
+            let assistant_msg = Message {
+                id: assistant_id.clone(),
+                role: Role::Assistant,
+                content: content.clone(),
+                provenance: Some(Provenance {
+                    input: input_ids,
+                    model: model.id.clone(),
+                    ts: chrono::Utc::now().to_rfc3339(),
+                    usage,
+                }),
+                meta: None,
+                extra: JsonMap::new(),
+            };
+            if let Err(e) = store.write_message(assistant_msg.clone()) {
+                yield AgentEvent::Error(e.to_string());
+                break;
+            }
+            message_ids.push(assistant_id);
+            yield AgentEvent::MessageComplete(assistant_msg);
+
+            // Extract tool calls.
+            let calls: Vec<(String, String, serde_json::Value)> = content.iter().filter_map(|c| {
+                if let ContentBlock::ToolUse { id, name, input, .. } = c {
+                    Some((id.clone(), name.clone(), input.clone()))
+                } else {
+                    None
+                }
+            }).collect();
+
+            if calls.is_empty() { break; }
+
+            // Execute tool calls.
+            let mut results: Vec<ContentBlock> = Vec::new();
+            for (call_id, call_name, call_input) in &calls {
+                if cancel.is_cancelled() {
+                    results.push(ContentBlock::tool_result_text(call_id, "Cancelled", true));
+                    continue;
+                }
+
+                yield AgentEvent::ToolStart { id: call_id.clone(), name: call_name.clone() };
+
+                let output = match tool_map.get(call_name.as_str()) {
+                    Some(tool) => {
+                        tool.run(call_input.clone(), cwd.to_path_buf(), cancel.clone()).await
+                    }
+                    None => ToolOutput {
+                        text: format!("Tool '{}' not found", call_name),
+                        is_error: true,
+                    },
+                };
+
+                yield AgentEvent::ToolEnd {
+                    id: call_id.clone(),
+                    output: output.text.clone(),
+                    is_error: output.is_error,
+                };
+
+                results.push(ContentBlock::tool_result_text(call_id, &output.text, output.is_error));
+            }
+
+            // Persist tool results.
+            let tool_id = store.next_id();
+            let tool_msg = Message::new(tool_id.clone(), Role::User, results);
+            if let Err(e) = store.write_message(tool_msg.clone()) {
+                yield AgentEvent::Error(e.to_string());
+                break;
+            }
+            message_ids.push(tool_id);
+            yield AgentEvent::MessageComplete(tool_msg);
+        }
+    }
+}

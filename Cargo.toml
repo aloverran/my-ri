@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "ri-cli",
+    "ri-web",
+]
+exclude = [
+    "ri-core",
+]
+resolver = "2"
