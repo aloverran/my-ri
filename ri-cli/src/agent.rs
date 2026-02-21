@@ -4,8 +4,8 @@
 //! SessionStore). It returns a stream of AgentEvents so the caller can
 //! drive display, logging, or RPC output with plain iteration.
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use async_stream::stream;
 use futures::Stream;
@@ -45,6 +45,7 @@ pub fn submit<'a>(
     message_ids: &'a mut Vec<String>,
     cwd: &'a Path,
     thinking: ThinkingLevel,
+    seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> eyre::Result<impl Stream<Item = AgentEvent> + 'a> {
     let user_id = store.next_id();
@@ -52,7 +53,7 @@ pub fn submit<'a>(
     store.write_message(user_msg)?;
     message_ids.push(user_id);
 
-    Ok(run(provider, model, system_prompt, tools, store, message_ids, cwd, thinking, None, cancel))
+    Ok(run(provider, model, system_prompt, tools, store, message_ids, cwd, thinking, None, seen_agents, cancel))
 }
 
 /// Run the agent loop: stream LLM response, execute tool calls, persist
@@ -70,6 +71,7 @@ fn run<'a>(
     cwd: &'a Path,
     thinking: ThinkingLevel,
     max_tokens: Option<usize>,
+    seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> impl Stream<Item = AgentEvent> + 'a {
     stream! {
@@ -161,6 +163,9 @@ fn run<'a>(
                     continue;
                 }
 
+                // Discover AGENTS.md files near the target path for file tools.
+                inject_context_for_tool(call_name, call_input, cwd, seen_agents, &mut results);
+
                 yield AgentEvent::ToolStart { id: call_id.clone(), name: call_name.clone() };
 
                 let output = match tool_map.get(call_name.as_str()) {
@@ -192,5 +197,53 @@ fn run<'a>(
             message_ids.push(tool_id);
             yield AgentEvent::MessageComplete(tool_msg);
         }
+    }
+}
+
+/// For file-related tools (Read, Write, Edit), discover any AGENTS.md files
+/// in the directory hierarchy above the target file that haven't been seen yet.
+/// Injects them as Text content blocks before the tool result.
+fn inject_context_for_tool(
+    tool_name: &str,
+    input: &serde_json::Value,
+    cwd: &Path,
+    seen: &mut HashSet<PathBuf>,
+    results: &mut Vec<ContentBlock>,
+) {
+    let path_str = match tool_name {
+        "read" | "write" | "edit" | "Read" | "Write" | "Edit" => {
+            match input.get("path").and_then(|v| v.as_str()) {
+                Some(p) => p,
+                None => return,
+            }
+        }
+        _ => return,
+    };
+
+    let resolved = if Path::new(path_str).is_absolute() {
+        PathBuf::from(path_str)
+    } else {
+        cwd.join(path_str)
+    };
+    let dir = match resolved.parent() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let new_files = ri_tools::resources::find_context_files(dir);
+    let mut injected = Vec::new();
+    for cf in new_files {
+        let canonical = cf.path.canonicalize().unwrap_or_else(|_| cf.path.clone());
+        if seen.insert(canonical) {
+            injected.push(cf);
+        }
+    }
+
+    if !injected.is_empty() {
+        let mut text = String::from("# Context Files (discovered)\n");
+        for cf in &injected {
+            text.push_str(&format!("\n## {}\n\n{}\n", cf.path.display(), cf.content));
+        }
+        results.push(ContentBlock::text(text));
     }
 }

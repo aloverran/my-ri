@@ -642,6 +642,7 @@ pub async fn run(
     cwd: PathBuf,
     initial_prompt: Option<String>,
     thinking: ThinkingLevel,
+    mut seen_agents: std::collections::HashSet<PathBuf>,
 ) -> eyre::Result<()> {
     let session_name = session_name_from_prompt(initial_prompt.as_deref());
     let (mut store, mut message_ids) = SessionStore::init(&session_name, &cwd, &system_prompt)?;
