@@ -103,24 +103,50 @@ fn run<'a>(
             let mut turn = match Turn::start(provider, opts).await {
                 Ok(t) => t,
                 Err(e) => {
-                    yield AgentEvent::Error(e.to_string());
+                    let msg_text = e.to_string();
+                    yield AgentEvent::Error(msg_text.clone());
+
+                    // Build and persist assistant message with error content block.
+                    let assistant_id = store.next_id();
+                    let assistant_msg = Message {
+                        id: assistant_id.clone(),
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::error(msg_text)],
+                        provenance: Some(Provenance {
+                            input: input_ids,
+                            model: model.id.clone(),
+                            ts: chrono::Utc::now().to_rfc3339(),
+                            usage: None,
+                        }),
+                        meta: None,
+                        extra: JsonMap::new(),
+                    };
+                    let _ = store.write_message(assistant_msg.clone());
+                    message_ids.push(assistant_id);
+                    yield AgentEvent::MessageComplete(assistant_msg);
                     break;
                 }
             };
 
             // Stream events to the caller and let Turn accumulate internally.
+            let mut turn_error = None;
             while let Some(result) = turn.next().await {
                 if cancel.is_cancelled() { break; }
                 match result {
                     Ok(evt) => yield AgentEvent::Stream(evt),
                     Err(e) => {
-                        yield AgentEvent::Error(e.to_string());
+                        let msg_text = e.to_string();
+                        yield AgentEvent::Error(msg_text.clone());
+                        turn_error = Some(msg_text);
                         break;
                     }
                 }
             }
 
-            let (content, usage) = turn.finish();
+            let (mut content, usage) = turn.finish();
+            if let Some(err) = turn_error {
+                content.push(ContentBlock::error(err));
+            }
 
             // Build and persist the assistant message.
             let assistant_id = store.next_id();

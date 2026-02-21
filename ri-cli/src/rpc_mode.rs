@@ -40,6 +40,7 @@ pub async fn run(
     initial_prompt: Option<String>,
     thinking: ThinkingLevel,
 ) {
+    let mut seen_agents = std::collections::HashSet::new();
     let (mut store, mut message_ids) = match SessionStore::init("rpc", &cwd, &system_prompt) {
         Ok(v) => v,
         Err(e) => {
@@ -52,7 +53,7 @@ pub async fn run(
         let cancel = tokio_util::sync::CancellationToken::new();
         let events = match agent::submit(
             &prompt, provider.as_ref(), &model, &system_prompt, &tools,
-            &mut store, &mut message_ids, &cwd, thinking, cancel,
+            &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -93,7 +94,7 @@ pub async fn run(
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let events = match agent::submit(
                     message, provider.as_ref(), &model, &system_prompt, &tools,
-                    &mut store, &mut message_ids, &cwd, thinking, cancel,
+                    &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
                 ) {
                     Ok(s) => s,
                     Err(e) => {

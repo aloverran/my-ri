@@ -70,8 +70,9 @@ export interface SSEHandlers {
   message_complete?: (data: any) => void;
   usage?: (data: any) => void;
   done?: () => void;
-  error?: (error: any) => void;
+  agent_error?: (data: { message: string }) => void;
   resync?: () => void;
+  error?: (error: any) => void;
 }
 
 // SSE connection
@@ -126,6 +127,11 @@ export function connectSSE(sessionId: string, handlers: SSEHandlers): EventSourc
 
   eventSource.addEventListener('done', () => {
     handlers.done?.();
+  });
+
+  eventSource.addEventListener('agent_error', (event) => {
+    const data = JSON.parse(event.data);
+    handlers.agent_error?.(data);
   });
 
   eventSource.addEventListener('resync', () => {

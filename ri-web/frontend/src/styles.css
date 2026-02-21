@@ -445,6 +445,48 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   border: 1px solid var(--border);
 }
 
+/* -- Error block -- */
+.error-block {
+  margin: 4px 0;
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--error) 5%, transparent);
+  overflow: hidden;
+}
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  font-weight: 600;
+  color: var(--error);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  background: var(--error);
+  color: white;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: bold;
+}
+.error-body {
+  padding: 6px 8px;
+  font-size: var(--size-sm);
+  color: var(--text-0);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ========================
    Responsive
    ======================== */

@@ -380,7 +380,7 @@ fn agent_event_to_sse(event: &AgentEvent) -> Option<Event> {
         }
         AgentEvent::Error(msg) => {
             let data = serde_json::json!({ "message": msg });
-            Some(Event::default().event("error").data(data.to_string()))
+            Some(Event::default().event("agent_error").data(data.to_string()))
         }
         AgentEvent::Done => {
             Some(Event::default().event("done").data("{}"))
@@ -428,7 +428,7 @@ fn stream_event_to_sse(event: &ri::StreamEvent) -> Option<Event> {
         ri::StreamEvent::Done => None, // Handled at AgentEvent level
         ri::StreamEvent::Error(msg) => {
             let data = serde_json::json!({ "message": msg });
-            Some(Event::default().event("error").data(data.to_string()))
+            Some(Event::default().event("agent_error").data(data.to_string()))
         }
     }
 }

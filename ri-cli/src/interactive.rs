@@ -664,6 +664,7 @@ pub async fn run(
             &mut message_ids,
             &cwd,
             thinking,
+            &mut seen_agents,
             &mut events,
         )
         .await?;
@@ -708,6 +709,7 @@ pub async fn run(
                     &mut message_ids,
                     &cwd,
                     thinking,
+                    &mut seen_agents,
                     &mut events,
                 )
                 .await?;
@@ -735,6 +737,7 @@ async fn run_prompt(
     message_ids: &mut Vec<String>,
     cwd: &PathBuf,
     thinking: ThinkingLevel,
+    seen_agents: &mut std::collections::HashSet<PathBuf>,
     term_events: &mut EventStream,
 ) -> eyre::Result<()> {
     tui.emit_block(ContentBlock {
@@ -748,7 +751,7 @@ async fn run_prompt(
     let cancel = tokio_util::sync::CancellationToken::new();
     let agent_stream = agent::submit(
         text, provider, model, system_prompt, tools, store, message_ids, cwd, thinking,
-        cancel.clone(),
+        seen_agents, cancel.clone(),
     )?;
     tokio::pin!(agent_stream);
 

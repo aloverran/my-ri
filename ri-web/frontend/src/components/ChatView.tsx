@@ -82,8 +82,15 @@ export default function ChatView(props: ChatViewProps) {
           setIsStreaming(false);
           refetch();
         },
-        error: () => { setIsStreaming(false); },
+        agent_error: (data) => {
+          setIsStreaming(false);
+          // The error will be persisted and fetched via refetch() if we rely on the backend.
+          // But we can also show it immediately if we want.
+          // Since message_complete might not fire, we should refetch.
+          refetch();
+        },
         resync: () => { refetch(); },
+        error: () => { setIsStreaming(false); },
       });
     }
   });

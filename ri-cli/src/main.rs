@@ -1,6 +1,7 @@
 use clap::Parser;
 use color_eyre::eyre::Result;
 use ri::{SessionStore, ThinkingLevel};
+use std::collections::HashSet;
 
 mod agent;
 mod interactive;
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
             let (mut store, mut message_ids) = SessionStore::init("print", &cwd_path, &system_prompt)?;
 
             let cancel = tokio_util::sync::CancellationToken::new();
+            let mut seen_agents = HashSet::new();
             let handler: fn(&agent::AgentEvent) = if is_json {
                 print_mode::on_event_json
             } else {
@@ -109,7 +111,7 @@ async fn main() -> Result<()> {
 
             let events = agent::submit(
                 &prompt, provider.as_ref(), &model, &system_prompt, &tools,
-                &mut store, &mut message_ids, &cwd_path, thinking, cancel,
+                &mut store, &mut message_ids, &cwd_path, thinking, &mut seen_agents, cancel,
             )?;
             tokio::pin!(events);
             while let Some(evt) = events.next().await {
@@ -121,7 +123,8 @@ async fn main() -> Result<()> {
             rpc_mode::run(provider, model, system_prompt, tools, cwd_path, cli.prompt, thinking).await;
         }
         "interactive" => {
-            interactive::run(provider, model, system_prompt, tools, cwd_path, cli.prompt, thinking).await?;
+            let seen_agents = HashSet::new();
+            interactive::run(provider, model, system_prompt, tools, cwd_path, cli.prompt, thinking, seen_agents).await?;
         }
         other => {
             eyre::bail!("Unknown mode '{}'. Expected: interactive, print, json, rpc", other);

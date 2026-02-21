@@ -121,24 +121,54 @@ async fn run_agent_loop(
         let mut turn = match Turn::start(provider, opts).await {
             Ok(t) => t,
             Err(e) => {
-                let _ = tx.send(AgentEvent::Error(e.to_string()));
+                let msg_text = e.to_string();
+                let _ = tx.send(AgentEvent::Error(msg_text.clone()));
+                
+                // Build and persist assistant message with error content block.
+                let assistant_msg = {
+                    let mut lock = session.lock().await;
+                    let assistant_id = lock.store.next_id();
+                    let msg = Message {
+                        id: assistant_id.clone(),
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::error(msg_text)],
+                        provenance: Some(Provenance {
+                            input: input_ids,
+                            model: model.id.clone(),
+                            ts: chrono::Utc::now().to_rfc3339(),
+                            usage: None,
+                        }),
+                        meta: None,
+                        extra: JsonMap::new(),
+                    };
+                    lock.store.write_message(msg.clone())?;
+                    lock.message_ids.push(assistant_id);
+                    msg
+                };
+                let _ = tx.send(AgentEvent::MessageComplete(assistant_msg));
                 break;
             }
         };
 
         // Stream events.
+        let mut turn_error = None;
         while let Some(result) = turn.next().await {
             if cancel.is_cancelled() { break; }
             match result {
                 Ok(evt) => { let _ = tx.send(AgentEvent::Stream(evt)); }
                 Err(e) => {
-                    let _ = tx.send(AgentEvent::Error(e.to_string()));
+                    let msg_text = e.to_string();
+                    let _ = tx.send(AgentEvent::Error(msg_text.clone()));
+                    turn_error = Some(msg_text);
                     break;
                 }
             }
         }
 
-        let (content, usage) = turn.finish();
+        let (mut content, usage) = turn.finish();
+        if let Some(err) = turn_error {
+            content.push(ContentBlock::error(err));
+        }
 
         // Build and persist assistant message -- brief lock.
         let assistant_msg = {

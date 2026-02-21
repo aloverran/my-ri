@@ -103,6 +103,18 @@ function SystemMessage(props: { message: Message }) {
   );
 }
 
+function ErrorBlock(props: { message: string }) {
+  return (
+    <div class="error-block">
+      <div class="error-header">
+        <span class="error-icon">!</span>
+        <span class="error-label">Error</span>
+      </div>
+      <div class="error-body">{props.message}</div>
+    </div>
+  );
+}
+
 // --- Content block dispatcher ---
 
 function BlockView(props: { block: ContentBlock }) {
@@ -121,6 +133,8 @@ function BlockView(props: { block: ContentBlock }) {
           <img src={`data:${props.block.mediaType};base64,${props.block.data}`} alt="" />
         </div>
       );
+    case 'error':
+      return <ErrorBlock message={props.block.message} />;
     default:
       return null;
   }

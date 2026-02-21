@@ -28,7 +28,8 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; content: ContentBlock[]; is_error: boolean }
-  | { type: "image"; mediaType: string; data: string };
+  | { type: "image"; mediaType: string; data: string }
+  | { type: "error"; message: string };
 
 export interface Provenance {
   input: string[];
