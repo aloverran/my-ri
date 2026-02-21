@@ -202,11 +202,26 @@ async fn send_message(
         return Err(AppError::Conflict("Agent loop is already running".into()));
     }
 
+    // Expand prompt templates for the session's working directory.
+    let text = {
+        let mut templates = Vec::new();
+        if let Some(global) = ri_tools::resources::config_dir() {
+            templates.extend(ri_tools::prompts::load_templates(&global.join("prompts")));
+        }
+        let mut dir = lock.cwd.canonicalize().ok().or_else(|| Some(lock.cwd.clone()));
+        while let Some(d) = dir {
+            templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
+            if d.join(".git").exists() { break; }
+            dir = d.parent().map(std::path::Path::to_path_buf);
+        }
+        ri_tools::prompts::expand_prompt(&req.text, &templates)
+    };
+
     let cancel = CancellationToken::new();
     let thinking = *state.thinking.read().await;
     let task = agent::spawn_agent_loop(
         session.clone(),
-        req.text,
+        text,
         state.provider.clone(),
         state.model.clone(),
         state.tools.clone(),

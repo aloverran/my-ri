@@ -64,12 +64,26 @@ async fn main() -> Result<()> {
         settings.default_thinking.as_deref(),
     );
 
+    let mut templates = Vec::new();
+    if let Some(global) = ri_tools::resources::config_dir() {
+        templates.extend(ri_tools::prompts::load_templates(&global.join("prompts")));
+    }
+    {
+        let mut dir = cwd_path.canonicalize().ok().or(Some(cwd_path.clone()));
+        while let Some(d) = dir {
+            templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
+            if d.join(".git").exists() { break; }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+
     match cli.mode.as_str() {
         "print" | "json" => {
             use futures::StreamExt;
 
-            let prompt = cli.prompt
+            let raw_prompt = cli.prompt
                 .ok_or_else(|| eyre::eyre!("Print mode requires --prompt (-p)"))?;
+            let prompt = ri_tools::prompts::expand_prompt(&raw_prompt, &templates);
 
             let is_json = cli.mode == "json" || cli.output == "json";
 

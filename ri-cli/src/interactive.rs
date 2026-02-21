@@ -650,8 +650,10 @@ pub async fn run(
     let mut events = EventStream::new();
 
     if let Some(prompt) = initial_prompt {
+        let templates = load_prompt_templates(&cwd);
+        let expanded = ri_tools::prompts::expand_prompt(&prompt, &templates);
         run_prompt(
-            &prompt,
+            &expanded,
             &mut tui,
             provider.as_ref(),
             &model,
@@ -680,7 +682,8 @@ pub async fn run(
                     break;
                 }
                 if trimmed == "/help" {
-                    let help = help_text();
+                    let templates = load_prompt_templates(&cwd);
+                    let help = help_text(&templates);
                     let md = tui_markdown::from_str(&help);
                     let lines = md.lines.into_iter().map(own_line).collect();
                     tui.emit_and_draw(lines)?;
@@ -690,8 +693,11 @@ pub async fn run(
                     handle_login(&trimmed, &model, &mut provider, &mut tui).await;
                     continue;
                 }
+                // Expand prompt templates (e.g. /task implement foo).
+                let templates = load_prompt_templates(&cwd);
+                let expanded = ri_tools::prompts::expand_prompt(&trimmed, &templates);
                 run_prompt(
-                    &trimmed,
+                    &expanded,
                     &mut tui,
                     provider.as_ref(),
                     &model,
@@ -1002,13 +1008,25 @@ fn wrapped_height(lines: &[Line<'_>], width: u16) -> u16 {
     para.line_count(width).min(u16::MAX as usize) as u16
 }
 
-fn help_text() -> String {
+fn help_text(templates: &[ri_tools::prompts::PromptTemplate]) -> String {
     let mut text = String::from("**Commands:**\n");
     for p in ri_ai::registry::all_providers() {
         text.push_str(&format!("- `/login {}` - {}\n", p.id(), p.name()));
     }
     text.push_str("- `/quit`, `/exit` - Exit ri\n");
     text.push_str("- `Ctrl+C` - Cancel running agent\n");
+
+    if !templates.is_empty() {
+        text.push_str("\n**Prompt Templates:**\n");
+        for t in templates {
+            if t.description.is_empty() {
+                text.push_str(&format!("- `/{}`\n", t.name));
+            } else {
+                text.push_str(&format!("- `/{}` - {}\n", t.name, t.description));
+            }
+        }
+    }
+
     text
 }
 
@@ -1024,4 +1042,20 @@ fn session_name_from_prompt(prompt: Option<&str>) -> String {
         }
         None => "interactive".to_string(),
     }
+}
+
+/// Load prompt templates from global config and project-local directories.
+fn load_prompt_templates(cwd: &std::path::Path) -> Vec<ri_tools::prompts::PromptTemplate> {
+    use std::path::Path;
+    let mut templates = Vec::new();
+    if let Some(global) = ri_tools::resources::config_dir() {
+        templates.extend(ri_tools::prompts::load_templates(&global.join("prompts")));
+    }
+    let mut dir = cwd.canonicalize().ok().or_else(|| Some(cwd.to_path_buf()));
+    while let Some(d) = dir {
+        templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
+        if d.join(".git").exists() { break; }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    templates
 }
