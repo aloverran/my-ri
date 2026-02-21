@@ -282,6 +282,7 @@ struct ModelInfo {
     id: String,
     name: String,
     provider: String,
+    context_window: usize,
 }
 
 /// List all available models across providers.
@@ -294,6 +295,7 @@ async fn list_models() -> Json<Vec<ModelInfo>> {
                 id: m.id,
                 name: m.name,
                 provider: provider_id.clone(),
+                context_window: m.context_window,
             });
         }
     }

@@ -311,7 +311,7 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   border: 1px solid var(--border);
   background: var(--bg-2);
   color: var(--text-2);
-  min-width: 36px;
+  min-width: 52px;
   text-align: center;
 }
 .thinking-btn:hover:not(:disabled) { border-color: var(--text-2); color: var(--text-1); }
@@ -331,6 +331,9 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-family: var(--font-mono);
 }
 .footer-model {
+  color: var(--text-1);
+}
+.footer-thinking {
   color: var(--text-1);
 }
 

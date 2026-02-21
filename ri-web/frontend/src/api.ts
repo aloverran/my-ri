@@ -55,6 +55,7 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider: string;
+  context_window: number;
 }
 
 export function getModels(): Promise<ModelInfo[]> {

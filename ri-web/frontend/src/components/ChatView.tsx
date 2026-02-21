@@ -6,13 +6,11 @@ import MessageView from './MessageView';
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
 
-const THINKING_LABELS: Record<ThinkingLevel, string> = {
-  off: 'off',
-  low: 'low',
-  medium: 'med',
-  high: 'high',
-  xhigh: 'max',
-};
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return n.toString();
+}
 
 interface ChatViewProps {
   sessionId: string;
@@ -196,10 +194,13 @@ export default function ChatView(props: ChatViewProps) {
 
   const isRunning = () => session()?.status === 'running' || isStreaming();
 
-  // Short display name for the current model.
-  const modelShort = () => {
+  // Raw model id for display.
+  const modelDisplay = () => model() || '?';
+
+  // Context window for the current model.
+  const contextWindow = () => {
     const m = models().find(x => x.id === model());
-    return m?.name || model() || '?';
+    return m?.context_window || 0;
   };
 
   return (
@@ -271,7 +272,7 @@ export default function ChatView(props: ChatViewProps) {
                   onChange={(e) => setModel(e.currentTarget.value)}
                 >
                   <For each={models()}>
-                    {(m) => <option value={m.id}>{m.name}</option>}
+                    {(m) => <option value={m.id}>{m.id}</option>}
                   </For>
                 </select>
               </div>
@@ -281,7 +282,7 @@ export default function ChatView(props: ChatViewProps) {
                   type="button"
                   class={`thinking-btn thinking-${thinking()}`}
                   onclick={cycleThinking}
-                >{THINKING_LABELS[thinking()]}</button>
+                >{thinking()}</button>
               </div>
             </div>
           </Show>
@@ -313,9 +314,16 @@ export default function ChatView(props: ChatViewProps) {
 
       <div class="chat-footer">
         <span>{session()?.cwd || ''}</span>
-        <span class="footer-model">{modelShort()}</span>
-        <Show when={usage()}>
-          <span>{usage()!.input_tokens}in / {usage()!.output_tokens}out</span>
+        <span class="footer-model">{modelDisplay()}</span>
+        <span class="footer-thinking">{thinking()}</span>
+        <Show when={usage() && contextWindow()}>
+          <span>{fmtTokens(usage()!.input_tokens)}/{fmtTokens(contextWindow())} ctx</span>
+          <Show when={usage()!.cache_read_tokens > 0}>
+            <span>{fmtTokens(usage()!.cache_read_tokens)} cr</span>
+          </Show>
+          <Show when={usage()!.cache_write_tokens > 0}>
+            <span>{fmtTokens(usage()!.cache_write_tokens)} cw</span>
+          </Show>
         </Show>
       </div>
     </div>
