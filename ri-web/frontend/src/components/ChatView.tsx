@@ -58,7 +58,7 @@ export default function ChatView(props: ChatViewProps) {
     getSettings().then(s => {
       // Only apply server defaults if session history hasn't already set them.
       if (!defaultsLoaded()) {
-        if (!model()) setModel(s.default_model);
+        if (model() == '') setModel(s.default_model);
         if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
           setThinking(s.default_thinking as ThinkingLevel);
         }
