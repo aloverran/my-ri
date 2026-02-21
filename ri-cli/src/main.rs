@@ -83,7 +83,18 @@ async fn main() -> Result<()> {
 
             let raw_prompt = cli.prompt
                 .ok_or_else(|| eyre::eyre!("Print mode requires --prompt (-p)"))?;
-            let prompt = ri_tools::prompts::expand_prompt(&raw_prompt, &templates);
+            let prompt = match ri_tools::prompts::parse_command(&raw_prompt) {
+                Some(cmd) => {
+                    match templates.iter().rfind(|t| t.name == cmd.name) {
+                        Some(t) => {
+                            let args: Vec<&str> = cmd.args_str.split_whitespace().collect();
+                            ri_tools::prompts::substitute_args(&t.content, &args)
+                        }
+                        None => raw_prompt,
+                    }
+                }
+                None => raw_prompt,
+            };
 
             let is_json = cli.mode == "json" || cli.output == "json";
 
