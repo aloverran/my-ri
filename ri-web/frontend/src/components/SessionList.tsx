@@ -21,7 +21,7 @@ function relativeTime(ts: string): string {
 export default function SessionList(props: SessionListProps) {
   const [sessions, { refetch }] = createResource<SessionSummary[]>(getSessions);
   const [name, setName] = createSignal('');
-  const [cwd, setCwd] = createSignal('/Users/john/Projects/ri2');
+  const [cwd, setCwd] = createSignal('/Users/john/Projects/ri');
   const [creating, setCreating] = createSignal(false);
 
   const handleCreate = async (e: Event) => {
