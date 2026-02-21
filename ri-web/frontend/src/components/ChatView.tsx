@@ -1,5 +1,6 @@
 import { createSignal, createResource, createEffect, onCleanup, onMount, For, Show } from 'solid-js';
 import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getModels, ModelInfo } from '../api';
+import { marked } from 'marked';
 import { Message, Usage } from '../types';
 import MessageView from './MessageView';
 
@@ -239,14 +240,12 @@ export default function ChatView(props: ChatViewProps) {
                     <span class="collapsible-label">thinking</span>
                   </div>
                   <div class="collapsible-body">
-                    <pre>{streamingThinking()}<span class="cursor">|</span></pre>
+                    <div class="md-text streaming-cursor" innerHTML={marked(streamingThinking()) as string} />
                   </div>
                 </div>
               </Show>
               <Show when={streamingText()}>
-                <div class="md-text">
-                  {streamingText()}<span class="cursor">|</span>
-                </div>
+                <div class="md-text streaming-cursor" innerHTML={marked(streamingText()) as string} />
               </Show>
             </div>
           </div>

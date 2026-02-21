@@ -499,6 +499,11 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   animation: blink 1s step-end infinite;
   color: var(--accent);
 }
+.streaming-cursor > *:last-child::after {
+  content: '|';
+  animation: blink 1s step-end infinite;
+  color: var(--accent);
+}
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
