@@ -37,24 +37,38 @@ export function deleteSession(id: string): Promise<void> {
   return apiRequest<void>('DELETE', `/sessions/${id}`);
 }
 
-export function sendMessage(sessionId: string, text: string): Promise<void> {
-  return apiRequest<void>('POST', `/sessions/${sessionId}/messages`, { text });
+export function sendMessage(
+  sessionId: string,
+  text: string,
+  model?: string,
+  thinking?: string,
+): Promise<void> {
+  return apiRequest<void>('POST', `/sessions/${sessionId}/messages`, { text, model, thinking });
 }
 
 export function cancelSession(sessionId: string): Promise<void> {
   return apiRequest<void>('POST', `/sessions/${sessionId}/cancel`);
 }
 
+// Models
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+export function getModels(): Promise<ModelInfo[]> {
+  return apiRequest<ModelInfo[]>('GET', '/models');
+}
+
+// Settings (server defaults)
 export interface SettingsData {
-  thinking: string;
+  default_model: string;
+  default_thinking: string;
 }
 
 export function getSettings(): Promise<SettingsData> {
   return apiRequest<SettingsData>('GET', '/settings');
-}
-
-export function updateSettings(settings: Partial<SettingsData>): Promise<SettingsData> {
-  return apiRequest<SettingsData>('PUT', '/settings', settings);
 }
 
 // SSE handlers interface -- data shapes match the backend's JSON payloads.

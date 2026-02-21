@@ -1,6 +1,6 @@
-import { createSignal, createResource, createEffect, onCleanup, For, Show } from 'solid-js';
-import { getSession, sendMessage, cancelSession, connectSSE, getSettings, updateSettings } from '../api';
-import { Usage } from '../types';
+import { createSignal, createResource, createEffect, onCleanup, onMount, For, Show } from 'solid-js';
+import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getModels, ModelInfo } from '../api';
+import { Message, Usage } from '../types';
 import MessageView from './MessageView';
 
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
@@ -19,6 +19,24 @@ interface ChatViewProps {
   onBack: () => void;
 }
 
+/// Scan messages in reverse for the last successful assistant message.
+/// "Successful" = assistant message with no error content blocks.
+/// Returns model from provenance, thinking from meta.
+function lastSuccessfulSettings(messages: Message[]): { model?: string; thinking?: string } {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant' || !m.provenance) continue;
+    const hasError = m.content.some(b => b.type === 'error');
+    if (!hasError) {
+      return {
+        model: m.provenance.model,
+        thinking: (m.meta as any)?.thinking,
+      };
+    }
+  }
+  return {};
+}
+
 export default function ChatView(props: ChatViewProps) {
   const [session, { refetch }] = createResource(() => props.sessionId, getSession);
   const [messageText, setMessageText] = createSignal('');
@@ -27,17 +45,45 @@ export default function ChatView(props: ChatViewProps) {
   const [streamingThinking, setStreamingThinking] = createSignal('');
   const [isStreaming, setIsStreaming] = createSignal(false);
   const [usage, setUsage] = createSignal<Usage | null>(null);
-  const [thinking, setThinking] = createSignal<ThinkingLevel>('medium');
 
-  // Load initial thinking level from server settings.
-  getSettings().then(s => {
-    if (THINKING_LEVELS.includes(s.thinking as ThinkingLevel)) {
-      setThinking(s.thinking as ThinkingLevel);
+  // Per-session settings, seeded from last successful message or server defaults.
+  const [model, setModel] = createSignal<string>('');
+  const [thinking, setThinking] = createSignal<ThinkingLevel>('medium');
+  const [models, setModels] = createSignal<ModelInfo[]>([]);
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [defaultsLoaded, setDefaultsLoaded] = createSignal(false);
+
+  // Load available models and server defaults once.
+  onMount(() => {
+    getModels().then(setModels).catch(() => {});
+    getSettings().then(s => {
+      // Only apply server defaults if session history hasn't already set them.
+      if (!defaultsLoaded()) {
+        if (!model()) setModel(s.default_model);
+        if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
+          setThinking(s.default_thinking as ThinkingLevel);
+        }
+      }
+    }).catch(() => {});
+  });
+
+  // Seed settings from session history on first load only.
+  let initialLoadDone = false;
+  createEffect(() => {
+    const s = session();
+    if (!s || initialLoadDone) return;
+    initialLoadDone = true;
+    const prev = lastSuccessfulSettings(s.messages);
+    if (prev.model) setModel(prev.model);
+    if (prev.thinking && THINKING_LEVELS.includes(prev.thinking as ThinkingLevel)) {
+      setThinking(prev.thinking as ThinkingLevel);
     }
-  }).catch(() => {});
+    setDefaultsLoaded(true);
+  });
 
   let messagesEl!: HTMLDivElement;
   let textareaEl!: HTMLTextAreaElement;
+  let settingsRef!: HTMLDivElement;
   let eventSource: EventSource | null = null;
 
   const scrollToBottom = () => {
@@ -49,6 +95,15 @@ export default function ChatView(props: ChatViewProps) {
     textareaEl.style.height = 'auto';
     textareaEl.style.height = Math.min(textareaEl.scrollHeight, 200) + 'px';
   };
+
+  // Close settings popover on outside click.
+  const handleClickOutside = (e: MouseEvent) => {
+    if (settingsOpen() && settingsRef && !settingsRef.contains(e.target as Node)) {
+      setSettingsOpen(false);
+    }
+  };
+  onMount(() => document.addEventListener('mousedown', handleClickOutside));
+  onCleanup(() => document.removeEventListener('mousedown', handleClickOutside));
 
   // SSE connection
   createEffect(() => {
@@ -68,8 +123,19 @@ export default function ChatView(props: ChatViewProps) {
           setStreamingThinking(prev => prev + data.delta);
           scrollToBottom();
         },
-        message_complete: async () => {
+        message_complete: async (msg: Message) => {
           setIsStreaming(false);
+          // Update settings from the just-completed message.
+          if (msg.role === 'assistant' && msg.provenance) {
+            const hasError = msg.content?.some((b: any) => b.type === 'error');
+            if (!hasError) {
+              if (msg.provenance.model) setModel(msg.provenance.model);
+              const msgThinking = (msg.meta as any)?.thinking;
+              if (msgThinking && THINKING_LEVELS.includes(msgThinking as ThinkingLevel)) {
+                setThinking(msgThinking as ThinkingLevel);
+              }
+            }
+          }
           try { await refetch(); }
           finally {
             setStreamingText('');
@@ -82,11 +148,8 @@ export default function ChatView(props: ChatViewProps) {
           setIsStreaming(false);
           refetch();
         },
-        agent_error: (data) => {
+        agent_error: () => {
           setIsStreaming(false);
-          // The error will be persisted and fetched via refetch() if we rely on the backend.
-          // But we can also show it immediately if we want.
-          // Since message_complete might not fire, we should refetch.
           refetch();
         },
         resync: () => { refetch(); },
@@ -109,7 +172,7 @@ export default function ChatView(props: ChatViewProps) {
 
     setSending(true);
     try {
-      await sendMessage(props.sessionId, text);
+      await sendMessage(props.sessionId, text, model() || undefined, thinking());
       setMessageText('');
       if (textareaEl) textareaEl.style.height = 'auto';
       refetch();
@@ -125,15 +188,19 @@ export default function ChatView(props: ChatViewProps) {
     catch (err) { console.error('Cancel failed:', err); }
   };
 
-  const cycleThinking = async () => {
+  const cycleThinking = () => {
     const idx = THINKING_LEVELS.indexOf(thinking());
     const next = THINKING_LEVELS[(idx + 1) % THINKING_LEVELS.length];
     setThinking(next);
-    try { await updateSettings({ thinking: next }); }
-    catch (err) { console.error('Settings update failed:', err); }
   };
 
   const isRunning = () => session()?.status === 'running' || isStreaming();
+
+  // Short display name for the current model.
+  const modelShort = () => {
+    const m = models().find(x => x.id === model());
+    return m?.name || model() || '?';
+  };
 
   return (
     <div class="chat-view">
@@ -186,12 +253,40 @@ export default function ChatView(props: ChatViewProps) {
       </div>
 
       <form class="chat-input" onSubmit={handleSend}>
-        <button
-          type="button"
-          class={`thinking-btn thinking-${thinking()}`}
-          onclick={cycleThinking}
-          title={`Thinking: ${thinking()}`}
-        >{THINKING_LABELS[thinking()]}</button>
+        <div class="settings-anchor" ref={settingsRef}>
+          <button
+            type="button"
+            class="settings-btn"
+            onclick={() => setSettingsOpen(!settingsOpen())}
+            title="Settings"
+          >{'\u2699'}</button>
+
+          <Show when={settingsOpen()}>
+            <div class="settings-popover">
+              <div class="settings-row">
+                <label class="settings-label">Model</label>
+                <select
+                  class="settings-select"
+                  value={model()}
+                  onChange={(e) => setModel(e.currentTarget.value)}
+                >
+                  <For each={models()}>
+                    {(m) => <option value={m.id}>{m.name}</option>}
+                  </For>
+                </select>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label">Thinking</label>
+                <button
+                  type="button"
+                  class={`thinking-btn thinking-${thinking()}`}
+                  onclick={cycleThinking}
+                >{THINKING_LABELS[thinking()]}</button>
+              </div>
+            </div>
+          </Show>
+        </div>
+
         <textarea
           ref={textareaEl}
           placeholder="Message..."
@@ -218,6 +313,7 @@ export default function ChatView(props: ChatViewProps) {
 
       <div class="chat-footer">
         <span>{session()?.cwd || ''}</span>
+        <span class="footer-model">{modelShort()}</span>
         <Show when={usage()}>
           <span>{usage()!.input_tokens}in / {usage()!.output_tokens}out</span>
         </Show>

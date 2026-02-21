@@ -10,10 +10,11 @@ use crate::agent::AgentEvent;
 
 /// Top-level server state, shared across all handlers via Arc.
 pub struct AppState {
-    pub provider: Arc<dyn ri::LlmProvider>,
-    pub model: ri::Model,
     pub tools: Vec<Arc<dyn ri::Tool>>,
-    pub thinking: RwLock<ri::ThinkingLevel>,
+    /// Global defaults (from CLI flags / settings.json). Used when a session
+    /// has no history to pull from.
+    pub default_model: String,
+    pub default_thinking: ri::ThinkingLevel,
     pub sessions_dir: PathBuf,
     pub sessions: RwLock<HashMap<String, Arc<Mutex<SessionState>>>>,
 }

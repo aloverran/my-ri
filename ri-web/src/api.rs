@@ -26,7 +26,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sessions/{id}/messages", post(send_message))
         .route("/sessions/{id}/events", get(session_events))
         .route("/sessions/{id}/cancel", post(cancel_session))
-        .route("/settings", get(get_settings).put(update_settings))
+        .route("/models", get(list_models))
+        .route("/settings", get(get_settings))
         .with_state(state)
 }
 
@@ -60,6 +61,12 @@ struct SessionDetail {
 #[derive(Deserialize)]
 struct SendMessageRequest {
     text: String,
+    /// Model ID for this request. Resolved against the registry.
+    #[serde(default)]
+    model: Option<String>,
+    /// Thinking level for this request.
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 // -- Handlers --
@@ -85,7 +92,6 @@ async fn list_sessions(
                     .unwrap_or("")
                     .to_string();
                 // Count non-empty lines (messages) minus the header.
-                // Uses BufRead to avoid loading entire file content into memory.
                 let line_count = count_lines(&path).unwrap_or(0);
                 summaries.push(SessionSummary {
                     id,
@@ -217,13 +223,23 @@ async fn send_message(
         ri_tools::prompts::expand_prompt(&req.text, &templates)
     };
 
+    // Resolve model: request > server default.
+    let model_id = req.model.unwrap_or_else(|| state.default_model.clone());
+    let (provider, model) = ri_ai::registry::resolve(&model_id).await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    // Resolve thinking: request > server default.
+    let thinking = req.thinking
+        .as_deref()
+        .and_then(parse_thinking)
+        .unwrap_or(state.default_thinking);
+
     let cancel = CancellationToken::new();
-    let thinking = *state.thinking.read().await;
     let task = agent::spawn_agent_loop(
         session.clone(),
         text,
-        state.provider.clone(),
-        state.model.clone(),
+        Arc::from(provider),
+        model,
         state.tools.clone(),
         thinking,
         cancel.clone(),
@@ -259,58 +275,46 @@ async fn cancel_session(
     Ok(StatusCode::OK)
 }
 
+// -- Models --
+
+#[derive(Serialize)]
+struct ModelInfo {
+    id: String,
+    name: String,
+    provider: String,
+}
+
+/// List all available models across providers.
+async fn list_models() -> Json<Vec<ModelInfo>> {
+    let mut models = Vec::new();
+    for provider in ri_ai::registry::all_providers() {
+        let provider_id = provider.id().to_string();
+        for m in provider.models() {
+            models.push(ModelInfo {
+                id: m.id,
+                name: m.name,
+                provider: provider_id.clone(),
+            });
+        }
+    }
+    Json(models)
+}
+
 // -- Settings --
 
 #[derive(Serialize)]
 struct SettingsResponse {
-    thinking: String,
-}
-
-#[derive(Deserialize)]
-struct UpdateSettingsRequest {
-    thinking: Option<String>,
+    default_model: String,
+    default_thinking: String,
 }
 
 async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Json<SettingsResponse> {
-    let thinking = *state.thinking.read().await;
     Json(SettingsResponse {
-        thinking: thinking_to_str(thinking).to_string(),
+        default_model: state.default_model.clone(),
+        default_thinking: thinking_to_str(state.default_thinking).to_string(),
     })
-}
-
-async fn update_settings(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<UpdateSettingsRequest>,
-) -> Result<Json<SettingsResponse>, AppError> {
-    if let Some(ref raw) = req.thinking {
-        let level = parse_thinking(raw)
-            .ok_or_else(|| AppError::BadRequest(format!("Invalid thinking level: '{}'", raw)))?;
-        *state.thinking.write().await = level;
-    }
-
-    // Persist to settings.json. Read existing, merge, write back.
-    if let Some(config_dir) = ri_tools::resources::config_dir() {
-        let path = config_dir.join("settings.json");
-        let mut obj: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
-            .unwrap_or_default();
-
-        if let Some(ref raw) = req.thinking {
-            obj.insert("defaultThinking".to_string(), serde_json::json!(raw));
-        }
-
-        if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&obj).unwrap_or_default()) {
-            tracing::warn!("Failed to write settings.json: {}", e);
-        }
-    }
-
-    let thinking = *state.thinking.read().await;
-    Ok(Json(SettingsResponse {
-        thinking: thinking_to_str(thinking).to_string(),
-    }))
 }
 
 fn thinking_to_str(level: ri::ThinkingLevel) -> &'static str {

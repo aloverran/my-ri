@@ -61,6 +61,16 @@ pub fn spawn_agent_loop(
     })
 }
 
+fn thinking_to_str(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => "off",
+        ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High => "high",
+        ThinkingLevel::XHigh => "xhigh",
+    }
+}
+
 async fn run_agent_loop(
     session: &Arc<Mutex<SessionState>>,
     user_text: &str,
@@ -78,6 +88,8 @@ async fn run_agent_loop(
 
     // Build system prompt outside any lock (does blocking file I/O).
     let system_prompt = build_system_prompt(&cwd);
+
+    let thinking_str = thinking_to_str(thinking).to_string();
 
     // Write user message under brief lock, then release.
     {
@@ -138,7 +150,7 @@ async fn run_agent_loop(
                             ts: chrono::Utc::now().to_rfc3339(),
                             usage: None,
                         }),
-                        meta: None,
+                        meta: Some(serde_json::json!({ "thinking": thinking_str })),
                         extra: JsonMap::new(),
                     };
                     lock.store.write_message(msg.clone())?;
@@ -184,7 +196,7 @@ async fn run_agent_loop(
                     ts: chrono::Utc::now().to_rfc3339(),
                     usage,
                 }),
-                meta: None,
+                meta: Some(serde_json::json!({ "thinking": thinking_str })),
                 extra: JsonMap::new(),
             };
             lock.store.write_message(msg.clone())?;

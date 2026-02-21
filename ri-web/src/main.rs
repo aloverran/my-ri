@@ -47,13 +47,11 @@ async fn main() -> Result<()> {
     // Load settings from ~/.config/agents/settings.json.
     let settings = ri_tools::resources::load_settings();
 
-    // Resolve provider and model.
-    let model_id = cli.model
+    let default_model = cli.model
         .or_else(|| settings.default_model.clone())
         .unwrap_or_else(|| ri_ai::registry::default_model_id().to_string());
-    let (provider, model) = ri_ai::registry::resolve(&model_id).await?;
 
-    let thinking = resolve_thinking(
+    let default_thinking = resolve_thinking(
         cli.thinking.as_deref(),
         settings.default_thinking.as_deref(),
     );
@@ -66,10 +64,9 @@ async fn main() -> Result<()> {
     let sessions_dir = ri::SessionStore::default_dir()?;
 
     let app_state = Arc::new(AppState {
-        provider: Arc::from(provider),
-        model,
         tools,
-        thinking: RwLock::new(thinking),
+        default_model,
+        default_thinking,
         sessions_dir,
         sessions: RwLock::new(std::collections::HashMap::new()),
     });
