@@ -61,6 +61,25 @@ export async function initHighlighter(): Promise<void> {
   });
 }
 
+// Inline highlight for use in single-line contexts (e.g. tool preview lines).
+// Returns just the colored <span> elements without any <pre>/<code> wrapper.
+// Falls back to plain escaped text if the language is unknown.
+export function highlightInline(code: string, lang: string): string {
+  if (!highlighter) return escapeHtml(code);
+
+  const normalized = normalizeLang(lang);
+  const loaded = highlighter.getLoadedLanguages();
+  if (!normalized || !loaded.includes(normalized)) {
+    return escapeHtml(code);
+  }
+
+  const html = highlighter.codeToHtml(code, { lang: normalized, theme: THEME });
+  // Strip the <pre ...><code> wrapper and </code></pre>, keep the inner spans.
+  const inner = html.replace(/^<pre[^>]*><code>/, '').replace(/<\/code><\/pre>$/, '');
+  // Also strip the outer <span class="line"> wrapper since this is inline.
+  return inner.replace(/^<span class="line">/, '').replace(/<\/span>$/, '');
+}
+
 // Synchronous highlight. Returns raw HTML string with <pre> wrapper.
 // Falls back to plain <pre><code> if the language is unknown or not loaded.
 export function highlight(code: string, lang: string): string {

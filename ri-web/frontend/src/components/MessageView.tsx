@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from 'solid-js';
 import { marked } from 'marked';
 import { Message, ContentBlock, DisplayMode } from '../types';
-import { highlight, langFromPath } from '../highlight';
+import { highlight, highlightInline, langFromPath } from '../highlight';
 
 /** Data needed to resolve tool_use -> tool_result in compact mode. */
 export interface ToolResultInfo {
@@ -175,7 +175,10 @@ function CompactToolCall(props: {
     <div class={`compact-tool ${stateClass()}`}>
       <button class="compact-tool-line" onclick={() => setOpen(!open())}>
         <span class="compact-tool-name">{props.name}</span>
-        <span class="compact-tool-preview">{preview()}</span>
+        {props.name === 'bash' && typeof (props.input as any)?.command === 'string'
+          ? <span class="compact-tool-preview compact-tool-highlighted" innerHTML={highlightInline(truncate((props.input as any).command, 120), 'bash')} />
+          : <span class="compact-tool-preview">{preview()}</span>
+        }
         <Show when={bashTimeout()}>
           <span class="compact-tool-timeout">{bashTimeout()}</span>
         </Show>
