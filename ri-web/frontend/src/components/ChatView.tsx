@@ -1,8 +1,8 @@
-import { createSignal, createResource, createEffect, onCleanup, onMount, For, Show } from 'solid-js';
+import { createSignal, createResource, createEffect, createMemo, onCleanup, onMount, For, Show } from 'solid-js';
 import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getModels, ModelInfo } from '../api';
 import { marked } from 'marked';
-import { Message, Usage } from '../types';
-import MessageView from './MessageView';
+import { Message, Usage, DisplayMode } from '../types';
+import MessageView, { ToolResultInfo } from './MessageView';
 
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
@@ -51,6 +51,22 @@ export default function ChatView(props: ChatViewProps) {
   const [models, setModels] = createSignal<ModelInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [defaultsLoaded, setDefaultsLoaded] = createSignal(false);
+  const [displayMode, setDisplayMode] = createSignal<DisplayMode>('compact');
+
+  // Build a lookup from toolUseId -> result info, derived from all messages.
+  // In compact mode, tool_use blocks in assistant messages will look up their
+  // corresponding tool_result to show a merged single-line view.
+  const toolResults = createMemo(() => {
+    const map = new Map<string, ToolResultInfo>();
+    for (const msg of session()?.messages || []) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_result') {
+          map.set(block.toolUseId, { content: block.content, is_error: block.is_error });
+        }
+      }
+    }
+    return map;
+  });
 
   // Load available models and server defaults once.
   onMount(() => {
@@ -215,6 +231,12 @@ export default function ChatView(props: ChatViewProps) {
         <Show when={isRunning()}>
           <button class="danger" onclick={handleCancel}>Cancel</button>
         </Show>
+        {/* Display mode toggle: compact (default) or debug (full message view) */}
+        <button
+          class={`display-mode-btn mode-${displayMode()}`}
+          onclick={() => setDisplayMode(m => m === 'compact' ? 'debug' : 'compact')}
+          title={`Display: ${displayMode()}`}
+        >{displayMode()}</button>
       </header>
 
       <div class="messages" ref={messagesEl}>
@@ -222,7 +244,7 @@ export default function ChatView(props: ChatViewProps) {
         <Show when={session.error}><div class="error-text">Failed to load session</div></Show>
 
         <For each={session()?.messages}>
-          {(message) => <MessageView message={message} />}
+          {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} />}
         </For>
 
         {/* Streaming preview */}

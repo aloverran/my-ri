@@ -44,3 +44,5 @@ export interface Usage {
   cache_read_tokens: number;
   cache_write_tokens: number;
 }
+
+export type DisplayMode = 'compact' | 'debug';

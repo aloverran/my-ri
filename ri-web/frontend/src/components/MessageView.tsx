@@ -1,6 +1,12 @@
 import { createSignal, For, Show } from 'solid-js';
 import { marked } from 'marked';
-import { Message, ContentBlock } from '../types';
+import { Message, ContentBlock, DisplayMode } from '../types';
+
+/** Data needed to resolve tool_use -> tool_result in compact mode. */
+export interface ToolResultInfo {
+  content: ContentBlock[];
+  is_error: boolean;
+}
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + '...';
@@ -14,7 +20,7 @@ function toolPreview(name: string, input: unknown): string {
     case 'read': return typeof obj.path === 'string' ? obj.path : '';
     case 'write': return typeof obj.path === 'string' ? obj.path : '';
     case 'edit': return typeof obj.path === 'string' ? obj.path : '';
-    default: return JSON.stringify(input).slice(0, 80);
+    default: return JSON.stringify(input).slice(0, 120);
   }
 }
 
@@ -29,7 +35,29 @@ function firstLine(text: string): string {
   return text.split('\n').find(l => l.trim() !== '')?.trim() || '';
 }
 
-// --- Collapsible sub-components ---
+// --- Tool result summary: produces a helpful triage line from tool output ---
+
+function toolResultSummary(content: ContentBlock[], isError: boolean): string {
+  const text = extractText(content);
+  const lines = text.split('\n').filter(l => l.trim() !== '');
+  if (lines.length === 0) return isError ? 'error (empty)' : 'ok (empty)';
+
+  // For bash output, strip "Exit code: N" and show the actual result
+  const exitMatch = lines[0]?.match(/^Exit code: (\d+)$/);
+  if (exitMatch) {
+    const code = exitMatch[1];
+    const rest = lines.slice(1).join(' ').trim();
+    const summary = rest ? truncate(rest, 120) : '';
+    return code === '0'
+      ? summary ? summary : 'ok'
+      : `exit ${code}` + (summary ? ` - ${summary}` : '');
+  }
+
+  // Generic: first meaningful content, truncated
+  return truncate(lines.join(' '), 140);
+}
+
+// --- Collapsible sub-components (debug mode) ---
 
 function ThinkingBlock(props: { text: string }) {
   const [open, setOpen] = createSignal(false);
@@ -86,7 +114,7 @@ function ToolResultBlock(props: { content: ContentBlock[]; isError: boolean }) {
   );
 }
 
-function SystemMessage(props: { message: Message }) {
+function SystemMessage(props: { message: Message; mode: DisplayMode }) {
   const [open, setOpen] = createSignal(false);
   const text = () => extractText(props.message.content);
   return (
@@ -98,6 +126,9 @@ function SystemMessage(props: { message: Message }) {
       </button>
       <Show when={open()}>
         <div class="collapsible-body"><pre>{text()}</pre></div>
+      </Show>
+      <Show when={props.mode === 'debug'}>
+        <span class="msg-id">{props.message.id}</span>
       </Show>
     </div>
   );
@@ -115,9 +146,61 @@ function ErrorBlock(props: { message: string }) {
   );
 }
 
-// --- Content block dispatcher ---
+// --- Compact merged tool call: shows request while pending, result once resolved ---
 
-function BlockView(props: { block: ContentBlock }) {
+/**
+ * A single merged tool call line for compact mode.
+ * Shows "toolname - request preview" while pending (dimmed),
+ * transitions to "toolname - result summary" once the result arrives.
+ * Click to expand full input/output.
+ */
+function CompactToolCall(props: {
+  name: string;
+  input: unknown;
+  result: ToolResultInfo | undefined;
+}) {
+  const [open, setOpen] = createSignal(false);
+  const pending = () => !props.result;
+  const isError = () => props.result?.is_error ?? false;
+
+  // Pending: show the request. Resolved: show the result summary.
+  const detail = () => {
+    if (pending()) return truncate(toolPreview(props.name, props.input), 120);
+    return toolResultSummary(props.result!.content, props.result!.is_error);
+  };
+
+  const stateClass = () => {
+    if (pending()) return 'compact-tool-pending';
+    if (isError()) return 'compact-tool-err';
+    return 'compact-tool-done';
+  };
+
+  return (
+    <div class={`compact-tool ${stateClass()}`}>
+      <button class="compact-tool-line" onclick={() => setOpen(!open())}>
+        <span class="compact-tool-name">{props.name}</span>
+        <span class="compact-tool-sep"> - </span>
+        <span class="compact-tool-detail">{detail()}</span>
+      </button>
+      <Show when={open()}>
+        <div class="collapsible-body">
+          {/* Show input */}
+          <pre>{JSON.stringify(props.input, null, 2)}</pre>
+          {/* Show output if resolved */}
+          <Show when={props.result}>
+            <pre class={props.result?.is_error ? 'tool-output-err' : 'tool-output-ok'}>
+              {extractText(props.result!.content)}
+            </pre>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+// --- Content block dispatchers ---
+
+function DebugBlockView(props: { block: ContentBlock }) {
   switch (props.block.type) {
     case 'text':
       return <div class="md-text" innerHTML={marked(props.block.text) as string} />;
@@ -140,14 +223,49 @@ function BlockView(props: { block: ContentBlock }) {
   }
 }
 
+function CompactBlockView(props: {
+  block: ContentBlock;
+  toolResults: Map<string, ToolResultInfo>;
+}) {
+  switch (props.block.type) {
+    case 'text':
+      return <div class="md-text" innerHTML={marked(props.block.text) as string} />;
+    case 'thinking':
+      return <ThinkingBlock text={props.block.thinking} />;
+    case 'tool_use':
+      return (
+        <CompactToolCall
+          name={props.block.name}
+          input={props.block.input}
+          result={props.toolResults.get(props.block.id)}
+        />
+      );
+    // tool_result blocks are not rendered in compact mode --
+    // they are merged into the tool_use line above.
+    case 'tool_result':
+      return null;
+    case 'image':
+      return (
+        <div class="content-image">
+          <img src={`data:${props.block.mediaType};base64,${props.block.data}`} alt="" />
+        </div>
+      );
+    case 'error':
+      return <ErrorBlock message={props.block.message} />;
+    default:
+      return null;
+  }
+}
+
 // --- Main message component ---
 
-interface MessageViewProps {
+export interface MessageViewProps {
   message: Message;
+  mode: DisplayMode;
+  toolResults: Map<string, ToolResultInfo>;
 }
 
 export default function MessageView(props: MessageViewProps) {
-  // Tool-result-only user messages get labeled "tool"
   const displayRole = (): string => {
     const m = props.message;
     if (m.role === 'user' && m.content.every(b => b.type === 'tool_result')) return 'tool';
@@ -162,22 +280,42 @@ export default function MessageView(props: MessageViewProps) {
   };
 
   if (props.message.role === 'system') {
-    return <SystemMessage message={props.message} />;
+    return <SystemMessage message={props.message} mode={props.mode} />;
   }
 
+  // In compact mode, hide user messages that are purely tool results
+  // (they're merged into the assistant's tool_use lines).
+  const isToolOnlyUser = () =>
+    props.message.role === 'user' &&
+    props.message.content.every(b => b.type === 'tool_result');
+
+  const isCompact = () => props.mode === 'compact';
+
+  // Use Show for reactive visibility -- early returns are not reactive in SolidJS.
   return (
-    <div class="msg">
-      <div class="msg-meta">
-        <span class={`msg-role role-${displayRole()}`}>{displayRole()}</span>
-        <Show when={timestamp()}>
-          <span class="msg-ts">{timestamp()}</span>
-        </Show>
+    <Show when={!(isCompact() && isToolOnlyUser())}>
+      <div class="msg">
+        {/* Message header: role + timestamp + optional debug id */}
+        <div class="msg-meta">
+          <span class={`msg-role role-${displayRole()}`}>{displayRole()}</span>
+          <Show when={timestamp()}>
+            <span class="msg-ts">{timestamp()}</span>
+          </Show>
+          <Show when={props.mode === 'debug'}>
+            <span class="msg-id">{props.message.id}</span>
+          </Show>
+        </div>
+
+        {/* Content blocks */}
+        <div class="msg-body">
+          <For each={props.message.content}>
+            {(block) => isCompact()
+              ? <CompactBlockView block={block} toolResults={props.toolResults} />
+              : <DebugBlockView block={block} />
+            }
+          </For>
+        </div>
       </div>
-      <div class="msg-body">
-        <For each={props.message.content}>
-          {(block) => <BlockView block={block} />}
-        </For>
-      </div>
-    </div>
+    </Show>
   );
 }

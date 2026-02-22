@@ -525,6 +525,91 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   background: color-mix(in srgb, var(--error) 5%, transparent);
   overflow: hidden;
 }
+
+/* -- Display mode toggle in header -- */
+.display-mode-btn {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  padding: 2px 6px;
+  height: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.display-mode-btn:hover:not(:disabled) { border-color: var(--text-2); color: var(--text-1); }
+.display-mode-btn.mode-debug { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, transparent); }
+
+/* -- Compact tool lines (merged tool_use + tool_result) -- */
+.compact-tool { margin: 2px 0 4px 0; }
+.compact-tool:last-child { margin-bottom: 6px; }
+.compact-tool-line {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 1px 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--size-sm);
+  color: var(--text-1);
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  height: auto;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.compact-tool-line:hover { color: var(--text-0); }
+
+/* Pending: dimmed, indicates tool is still running */
+.compact-tool-pending .compact-tool-line { opacity: 0.5; }
+.compact-tool-pending .compact-tool-name { color: var(--text-2); }
+
+/* Done: yellow-orange name, result is shown */
+.compact-tool-done .compact-tool-name { color: var(--warning); }
+
+/* Error: red-tinted name */
+.compact-tool-err .compact-tool-name { color: var(--error); }
+
+.compact-tool-name {
+  font-weight: 500;
+  flex-shrink: 0;
+  color: var(--warning);
+}
+.compact-tool-sep {
+  flex-shrink: 0;
+  color: var(--text-2);
+}
+.compact-tool-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+/* Expanded tool output in compact mode */
+.tool-output-ok {
+  border-left: 2px solid var(--success);
+  margin-top: 4px;
+}
+.tool-output-err {
+  border-left: 2px solid var(--error);
+  margin-top: 4px;
+}
+
+/* -- Debug mode message ID -- */
+.msg-id {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.12);
+  margin-left: auto;
+  flex-shrink: 0;
+  user-select: all;
+}
 .error-header {
   display: flex;
   align-items: center;
