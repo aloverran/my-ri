@@ -12,14 +12,20 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + '...';
 }
 
-function toolPreview(name: string, input: unknown): string {
+function toolPreview(name: string, input: unknown, cwd: string): string {
   if (!input || typeof input !== 'object') return JSON.stringify(input).slice(0, 80);
   const obj = input as Record<string, unknown>;
   switch (name) {
     case 'bash': return typeof obj.command === 'string' ? obj.command : '';
-    case 'read': return typeof obj.path === 'string' ? obj.path : '';
-    case 'write': return typeof obj.path === 'string' ? obj.path : '';
-    case 'edit': return typeof obj.path === 'string' ? obj.path : '';
+    case 'read':
+    case 'write':
+    case 'edit': {
+      if (typeof obj.path !== 'string') return '';
+      // Show path relative to cwd when possible
+      const p = obj.path as string;
+      if (cwd && p.startsWith(cwd + '/')) return p.slice(cwd.length + 1);
+      return p;
+    }
     default: return JSON.stringify(input).slice(0, 120);
   }
 }
@@ -33,28 +39,6 @@ function extractText(blocks: ContentBlock[]): string {
 
 function firstLine(text: string): string {
   return text.split('\n').find(l => l.trim() !== '')?.trim() || '';
-}
-
-// --- Tool result summary: produces a helpful triage line from tool output ---
-
-function toolResultSummary(content: ContentBlock[], isError: boolean): string {
-  const text = extractText(content);
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  if (lines.length === 0) return isError ? 'error (empty)' : 'ok (empty)';
-
-  // For bash output, strip "Exit code: N" and show the actual result
-  const exitMatch = lines[0]?.match(/^Exit code: (\d+)$/);
-  if (exitMatch) {
-    const code = exitMatch[1];
-    const rest = lines.slice(1).join(' ').trim();
-    const summary = rest ? truncate(rest, 120) : '';
-    return code === '0'
-      ? summary ? summary : 'ok'
-      : `exit ${code}` + (summary ? ` - ${summary}` : '');
-  }
-
-  // Generic: first meaningful content, truncated
-  return truncate(lines.join(' '), 140);
 }
 
 // --- Collapsible sub-components (debug mode) ---
@@ -79,7 +63,7 @@ function ThinkingBlock(props: { text: string }) {
 
 function ToolUseBlock(props: { name: string; input: unknown }) {
   const [open, setOpen] = createSignal(false);
-  const preview = () => truncate(toolPreview(props.name, props.input), 80);
+  const preview = () => truncate(toolPreview(props.name, props.input, ''), 80);
   return (
     <div class="collapsible">
       <button class="collapsible-header" onclick={() => setOpen(!open())}>
@@ -146,28 +130,25 @@ function ErrorBlock(props: { message: string }) {
   );
 }
 
-// --- Compact merged tool call: shows request while pending, result once resolved ---
+// --- Compact merged tool call: invocation line, expand for result ---
 
 /**
  * A single merged tool call line for compact mode.
- * Shows "toolname - request preview" while pending (dimmed),
- * transitions to "toolname - result summary" once the result arrives.
- * Click to expand full input/output.
+ * Collapsed: always shows "toolname  command/path" (invocation only).
+ * Expanded: shows full input + output.
+ * Pending vs done distinguished by left border color + background.
  */
 function CompactToolCall(props: {
   name: string;
   input: unknown;
   result: ToolResultInfo | undefined;
+  cwd: string;
 }) {
   const [open, setOpen] = createSignal(false);
   const pending = () => !props.result;
   const isError = () => props.result?.is_error ?? false;
 
-  // Pending: show the request. Resolved: show the result summary.
-  const detail = () => {
-    if (pending()) return truncate(toolPreview(props.name, props.input), 120);
-    return toolResultSummary(props.result!.content, props.result!.is_error);
-  };
+  const preview = () => truncate(toolPreview(props.name, props.input, props.cwd), 120);
 
   const stateClass = () => {
     if (pending()) return 'compact-tool-pending';
@@ -179,14 +160,11 @@ function CompactToolCall(props: {
     <div class={`compact-tool ${stateClass()}`}>
       <button class="compact-tool-line" onclick={() => setOpen(!open())}>
         <span class="compact-tool-name">{props.name}</span>
-        <span class="compact-tool-sep"> - </span>
-        <span class="compact-tool-detail">{detail()}</span>
+        <span class="compact-tool-preview">{preview()}</span>
       </button>
       <Show when={open()}>
         <div class="collapsible-body">
-          {/* Show input */}
           <pre>{JSON.stringify(props.input, null, 2)}</pre>
-          {/* Show output if resolved */}
           <Show when={props.result}>
             <pre class={props.result?.is_error ? 'tool-output-err' : 'tool-output-ok'}>
               {extractText(props.result!.content)}
@@ -226,6 +204,7 @@ function DebugBlockView(props: { block: ContentBlock }) {
 function CompactBlockView(props: {
   block: ContentBlock;
   toolResults: Map<string, ToolResultInfo>;
+  cwd: string;
 }) {
   switch (props.block.type) {
     case 'text':
@@ -238,6 +217,7 @@ function CompactBlockView(props: {
           name={props.block.name}
           input={props.block.input}
           result={props.toolResults.get(props.block.id)}
+          cwd={props.cwd}
         />
       );
     // tool_result blocks are not rendered in compact mode --
@@ -263,6 +243,7 @@ export interface MessageViewProps {
   message: Message;
   mode: DisplayMode;
   toolResults: Map<string, ToolResultInfo>;
+  cwd: string;
 }
 
 export default function MessageView(props: MessageViewProps) {
@@ -310,7 +291,7 @@ export default function MessageView(props: MessageViewProps) {
         <div class="msg-body">
           <For each={props.message.content}>
             {(block) => isCompact()
-              ? <CompactBlockView block={block} toolResults={props.toolResults} />
+              ? <CompactBlockView block={block} toolResults={props.toolResults} cwd={props.cwd} />
               : <DebugBlockView block={block} />
             }
           </For>

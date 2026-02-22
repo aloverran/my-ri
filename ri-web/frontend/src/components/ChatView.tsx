@@ -244,7 +244,7 @@ export default function ChatView(props: ChatViewProps) {
         <Show when={session.error}><div class="error-text">Failed to load session</div></Show>
 
         <For each={session()?.messages}>
-          {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} />}
+          {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} cwd={session()?.cwd || ''} />}
         </For>
 
         {/* Streaming preview */}
