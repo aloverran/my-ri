@@ -194,7 +194,7 @@ function CompactToolCall(props: {
               const errClass = props.result?.is_error ? 'tool-output-err' : 'tool-output-ok';
               // Highlight read/edit/write results by file extension; bash output stays plain
               const path = typeof (props.input as any)?.path === 'string' ? (props.input as any).path : '';
-              const lang = (props.name === 'read' || props.name === 'edit' || props.name === 'write') ? langFromPath(path) : '';
+              const lang = (props.name === 'read' || props.name === 'write') ? langFromPath(path) : '';
               if (lang) {
                 return <div class={errClass} innerHTML={highlight(text, lang)} />;
               }
