@@ -415,6 +415,8 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-size: 0.9em;
 }
 .md-text pre code { background: none; padding: 0; }
+/* Shiki highlighted code blocks: keep shiki's inline colors, apply our spacing */
+.md-text pre.shiki, .collapsible-body pre.shiki { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; overflow-x: auto; margin: 4px 0; line-height: 1.3; font-family: var(--font-mono); font-size: var(--size-sm); white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; }
 .md-text ul, .md-text ol { padding-left: 20px; margin: 4px 0; }
 .md-text li { margin-bottom: 2px; }
 .md-text blockquote {
@@ -619,6 +621,8 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   border-left: 2px solid var(--error);
   margin-top: 4px;
 }
+/* When tool output is highlighted, the shiki <pre> is inside a div wrapper */
+.tool-output-ok > pre.shiki, .tool-output-err > pre.shiki { margin: 0; }
 
 /* -- Debug mode message ID -- */
 .msg-id {

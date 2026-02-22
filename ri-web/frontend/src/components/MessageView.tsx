@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from 'solid-js';
 import { marked } from 'marked';
 import { Message, ContentBlock, DisplayMode } from '../types';
+import { highlight, langFromPath } from '../highlight';
 
 /** Data needed to resolve tool_use -> tool_result in compact mode. */
 export interface ToolResultInfo {
@@ -72,7 +73,12 @@ function ToolUseBlock(props: { name: string; input: unknown }) {
         <span class="collapsible-preview">{preview()}</span>
       </button>
       <Show when={open()}>
-        <div class="collapsible-body"><pre>{JSON.stringify(props.input, null, 2)}</pre></div>
+        <div class="collapsible-body">
+          {props.name === 'bash' && typeof (props.input as any)?.command === 'string'
+            ? <div innerHTML={highlight((props.input as any).command, 'bash')} />
+            : <div innerHTML={highlight(JSON.stringify(props.input, null, 2), 'json')} />
+          }
+        </div>
       </Show>
     </div>
   );
@@ -176,15 +182,24 @@ function CompactToolCall(props: {
       </button>
       <Show when={open()}>
         <div class="collapsible-body">
-          {/* Bash: show command as plain text. Others: JSON. */}
-          <pre>{props.name === 'bash' && typeof (props.input as any)?.command === 'string'
-            ? (props.input as any).command
-            : JSON.stringify(props.input, null, 2)
-          }</pre>
+          {/* Bash: highlight command as bash. Read/edit/write: highlight as JSON.
+              Tool output: highlight read/edit results by file extension, bash output stays plain. */}
+          {props.name === 'bash' && typeof (props.input as any)?.command === 'string'
+            ? <div innerHTML={highlight((props.input as any).command, 'bash')} />
+            : <div innerHTML={highlight(JSON.stringify(props.input, null, 2), 'json')} />
+          }
           <Show when={props.result}>
-            <pre class={props.result?.is_error ? 'tool-output-err' : 'tool-output-ok'}>
-              {extractText(props.result!.content)}
-            </pre>
+            {(() => {
+              const text = extractText(props.result!.content);
+              const errClass = props.result?.is_error ? 'tool-output-err' : 'tool-output-ok';
+              // Highlight read/edit/write results by file extension; bash output stays plain
+              const path = typeof (props.input as any)?.path === 'string' ? (props.input as any).path : '';
+              const lang = (props.name === 'read' || props.name === 'edit' || props.name === 'write') ? langFromPath(path) : '';
+              if (lang) {
+                return <div class={errClass} innerHTML={highlight(text, lang)} />;
+              }
+              return <pre class={errClass}>{text}</pre>;
+            })()}
           </Show>
         </div>
       </Show>
