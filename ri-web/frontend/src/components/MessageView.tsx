@@ -156,15 +156,31 @@ function CompactToolCall(props: {
     return 'compact-tool-done';
   };
 
+  // For bash, extract timeout from input for display on collapsed line
+  const bashTimeout = () => {
+    if (props.name !== 'bash') return '';
+    const raw = (props.input as any)?.timeout;
+    const t = typeof raw === 'string' ? parseInt(raw, 10) : raw;
+    if (typeof t !== 'number' || isNaN(t)) return '';
+    return t >= 1000 ? (t / 1000) + 's' : t + 'ms';
+  };
+
   return (
     <div class={`compact-tool ${stateClass()}`}>
       <button class="compact-tool-line" onclick={() => setOpen(!open())}>
         <span class="compact-tool-name">{props.name}</span>
         <span class="compact-tool-preview">{preview()}</span>
+        <Show when={bashTimeout()}>
+          <span class="compact-tool-timeout">{bashTimeout()}</span>
+        </Show>
       </button>
       <Show when={open()}>
         <div class="collapsible-body">
-          <pre>{JSON.stringify(props.input, null, 2)}</pre>
+          {/* Bash: show command as plain text. Others: JSON. */}
+          <pre>{props.name === 'bash' && typeof (props.input as any)?.command === 'string'
+            ? (props.input as any).command
+            : JSON.stringify(props.input, null, 2)
+          }</pre>
           <Show when={props.result}>
             <pre class={props.result?.is_error ? 'tool-output-err' : 'tool-output-ok'}>
               {extractText(props.result!.content)}

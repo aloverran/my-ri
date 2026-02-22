@@ -601,6 +601,13 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   white-space: nowrap;
   color: var(--text-2);
   flex: 1;
+  min-width: 0;
+}
+.compact-tool-timeout {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: var(--size-xs);
+  color: var(--text-2);
 }
 
 /* Expanded tool output in compact mode */
