@@ -43,6 +43,7 @@ export interface Usage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  extras?: Record<string, unknown>;
 }
 
 export type DisplayMode = 'compact' | 'debug';

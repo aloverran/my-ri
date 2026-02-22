@@ -639,6 +639,62 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   flex-shrink: 0;
   user-select: all;
 }
+
+/* -- Debug mode usage stats per message -- */
+.usage-stats {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  border-top: 1px solid var(--border);
+}
+.usage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.usage-summary:hover { color: var(--text-1); }
+.usage-model {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.usage-item {
+  color: var(--text-2);
+}
+.usage-cache-read {
+  color: var(--success);
+}
+.usage-cache-write {
+  color: var(--warning);
+}
+.usage-total {
+  color: var(--text-1);
+}
+.usage-expand {
+  color: var(--text-2);
+  font-size: 10px;
+}
+.usage-extras {
+  padding: 2px 0 2px 8px;
+  border-left: 1px solid var(--border);
+  margin: 2px 0 2px 4px;
+}
+.usage-extra-row {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+.usage-extra-key {
+  color: var(--text-1);
+  min-width: 200px;
+  flex-shrink: 0;
+}
+.usage-extra-val {
+  color: var(--text-2);
+  word-break: break-all;
+}
 .error-header {
   display: flex;
   align-items: center;

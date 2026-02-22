@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from 'solid-js';
 import { marked } from 'marked';
-import { Message, ContentBlock, DisplayMode } from '../types';
+import { Message, ContentBlock, DisplayMode, Usage } from '../types';
 import { highlight, highlightInline, langFromPath } from '../highlight';
 
 /** Data needed to resolve tool_use -> tool_result in compact mode. */
@@ -41,6 +41,59 @@ function extractText(blocks: ContentBlock[]): string {
 
 function firstLine(text: string): string {
   return text.split('\n').find(l => l.trim() !== '')?.trim() || '';
+}
+
+// --- Token formatting ---
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return n.toString();
+}
+
+function UsageStats(props: { usage: Usage; model: string }) {
+  const [open, setOpen] = createSignal(false);
+  const u = () => props.usage;
+  const total = () => u().input_tokens + u().output_tokens;
+  const cacheHitPct = () => {
+    const inp = u().input_tokens + u().cache_read_tokens;
+    if (inp === 0) return 0;
+    return Math.round((u().cache_read_tokens / inp) * 100);
+  };
+  const hasExtras = () => u().extras && Object.keys(u().extras!).length > 0;
+  return (
+    <div class="usage-stats">
+      <div class="usage-summary" onclick={() => hasExtras() && setOpen(!open())}>
+        <span class="usage-model">{props.model}</span>
+        <span class="usage-item">{fmtTokens(u().input_tokens)} in</span>
+        <span class="usage-item">{fmtTokens(u().output_tokens)} out</span>
+        <Show when={u().cache_read_tokens > 0}>
+          <span class="usage-item usage-cache-read">{fmtTokens(u().cache_read_tokens)} cached ({cacheHitPct()}%)</span>
+        </Show>
+        <Show when={u().cache_write_tokens > 0}>
+          <span class="usage-item usage-cache-write">{fmtTokens(u().cache_write_tokens)} cache-write</span>
+        </Show>
+        <span class="usage-total">{fmtTokens(total())} total</span>
+        <Show when={hasExtras()}>
+          <span class="usage-expand">{open() ? '\u25BE' : '\u25B8'}</span>
+        </Show>
+      </div>
+      <Show when={open() && hasExtras()}>
+        <div class="usage-extras">
+          <For each={Object.entries(u().extras!)}>
+            {([key, value]) => (
+              <div class="usage-extra-row">
+                <span class="usage-extra-key">{key}</span>
+                <span class="usage-extra-val">
+                  {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
 }
 
 // --- Collapsible sub-components (debug mode) ---
@@ -379,6 +432,14 @@ export default function MessageView(props: MessageViewProps) {
             }
           </For>
         </div>
+
+        {/* Usage stats in debug mode for assistant messages */}
+        <Show when={props.mode === 'debug' && props.message.provenance?.usage}>
+          <UsageStats
+            usage={props.message.provenance!.usage!}
+            model={props.message.provenance!.model}
+          />
+        </Show>
       </div>
     </Show>
   );
