@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, JsonMap, LlmProvider, Message, Model, Provenance,
+    ContentBlock, LlmProvider, Message, Model, Provenance,
     RequestOptions, Role, StreamEvent, ThinkingLevel,
     Tool, ToolOutput, ToolSchema,
 };
@@ -24,7 +24,7 @@ use crate::state::SessionState;
 pub enum AgentEvent {
     Stream(StreamEvent),
     ToolStart { id: String, name: String },
-    ToolEnd { id: String, output: String, is_error: bool },
+    ToolEnd { id: String, output: String, is_error: bool, details: Option<serde_json::Value> },
     MessageComplete(Message),
     Error(String),
     Done,
@@ -151,7 +151,6 @@ async fn run_agent_loop(
                             usage: None,
                         }),
                         meta: Some(serde_json::json!({ "thinking": thinking_str })),
-                        extra: JsonMap::new(),
                     };
                     lock.store.write_message(msg.clone())?;
                     lock.message_ids.push(assistant_id);
@@ -197,7 +196,6 @@ async fn run_agent_loop(
                     usage,
                 }),
                 meta: Some(serde_json::json!({ "thinking": thinking_str })),
-                extra: JsonMap::new(),
             };
             lock.store.write_message(msg.clone())?;
             lock.message_ids.push(assistant_id);
@@ -221,7 +219,7 @@ async fn run_agent_loop(
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             if cancel.is_cancelled() {
-                results.push(ContentBlock::tool_result_text(call_id, "Cancelled", true));
+                results.push(ContentBlock::tool_result_with_details(call_id, "Cancelled", true, None));
                 continue;
             }
 
@@ -234,6 +232,7 @@ async fn run_agent_loop(
                 None => ToolOutput {
                     text: format!("Tool '{}' not found", call_name),
                     is_error: true,
+                    details: None,
                 },
             };
 
@@ -241,9 +240,10 @@ async fn run_agent_loop(
                 id: call_id.clone(),
                 output: output.text.clone(),
                 is_error: output.is_error,
+                details: output.details.clone(),
             });
 
-            results.push(ContentBlock::tool_result_text(call_id, &output.text, output.is_error));
+            results.push(ContentBlock::tool_result_with_details(call_id, &output.text, output.is_error, output.details));
         }
 
         // Persist tool results -- brief lock.

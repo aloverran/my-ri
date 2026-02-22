@@ -7,6 +7,7 @@ import { highlight, highlightInline, langFromPath } from '../highlight';
 export interface ToolResultInfo {
   content: ContentBlock[];
   is_error: boolean;
+  details?: any;
 }
 
 function truncate(s: string, max: number): string {
@@ -193,8 +194,56 @@ function CompactToolCall(props: {
           }
           <Show when={props.result}>
             {(() => {
-              const text = extractText(props.result!.content);
-              const errClass = props.result?.is_error ? 'tool-output-err' : 'tool-output-ok';
+              const res = props.result!;
+              const text = extractText(res.content);
+              const details = res.details;
+              
+              if (props.name === 'bash' && details && typeof details.exit_code === 'number') {
+                return (
+                  <div class="bash-result">
+                    <div class="bash-header">
+                      <span class={`bash-exit-code ${details.exit_code === 0 ? 'success' : 'fail'}`}>
+                        exit {details.exit_code}
+                      </span>
+                    </div>
+                    <Show when={details.stdout}>
+                      <pre class="bash-stdout">{details.stdout}</pre>
+                    </Show>
+                    <Show when={details.stderr}>
+                      <pre class="bash-stderr">{details.stderr}</pre>
+                    </Show>
+                  </div>
+                );
+              }
+
+              if (props.name === 'read' && details && typeof details.content === 'string') {
+                const lang = langFromPath(details.path || '');
+                return (
+                  <div class="read-result">
+                    <div class="file-meta">{details.total_lines} lines</div>
+                    <div class="file-content" innerHTML={highlight(details.content, lang)} />
+                  </div>
+                );
+              }
+
+              if (props.name === 'edit' && details && typeof details.old_text === 'string') {
+                return (
+                  <div class="edit-result">
+                    <div class="edit-diff">
+                      <div class="diff-removed">
+                        <span class="diff-sign">-</span>
+                        <pre>{details.old_text}</pre>
+                      </div>
+                      <div class="diff-added">
+                        <span class="diff-sign">+</span>
+                        <pre>{details.new_text}</pre>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              const errClass = res.is_error ? 'tool-output-err' : 'tool-output-ok';
               // Highlight read/edit/write results by file extension; bash output stays plain
               const path = typeof (props.input as any)?.path === 'string' ? (props.input as any).path : '';
               const lang = (props.name === 'read' || props.name === 'write') ? langFromPath(path) : '';

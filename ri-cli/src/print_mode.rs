@@ -56,8 +56,8 @@ pub fn event_to_json(evt: &AgentEvent) -> serde_json::Value {
             StreamEvent::Error(msg) => json!({"type": "stream_error", "message": msg}),
         },
         AgentEvent::ToolStart { id, name } => json!({"type": "tool_start", "id": id, "name": name}),
-        AgentEvent::ToolEnd { id, output, is_error } => json!({
-            "type": "tool_end", "id": id, "output": output, "is_error": is_error
+        AgentEvent::ToolEnd { id, output, is_error, details } => json!({
+            "type": "tool_end", "id": id, "output": output, "is_error": is_error, "details": details
         }),
         AgentEvent::MessageComplete(msg) => json!({
             "type": "message_complete", "id": &msg.id, "role": msg.role

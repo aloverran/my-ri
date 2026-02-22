@@ -376,8 +376,8 @@ fn agent_event_to_sse(event: &AgentEvent) -> Option<Event> {
             let data = serde_json::json!({ "id": id, "name": name });
             Some(Event::default().event("tool_start").data(data.to_string()))
         }
-        AgentEvent::ToolEnd { id, output, is_error } => {
-            let data = serde_json::json!({ "id": id, "output": output, "is_error": is_error });
+        AgentEvent::ToolEnd { id, output, is_error, details } => {
+            let data = serde_json::json!({ "id": id, "output": output, "is_error": is_error, "details": details });
             Some(Event::default().event("tool_end").data(data.to_string()))
         }
         AgentEvent::MessageComplete(msg) => {

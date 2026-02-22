@@ -11,7 +11,7 @@ use async_stream::stream;
 use futures::Stream;
 
 use ri::{
-    ContentBlock, JsonMap, LlmProvider, Message, Model, Provenance,
+    ContentBlock, LlmProvider, Message, Model, Provenance,
     RequestOptions, Role, SessionStore, StreamEvent, ThinkingLevel,
     Tool, ToolOutput, ToolSchema,
 };
@@ -25,7 +25,7 @@ pub enum AgentEvent {
     /// A tool is about to be executed.
     ToolStart { id: String, name: String },
     /// A tool has finished executing.
-    ToolEnd { id: String, output: String, is_error: bool },
+    ToolEnd { id: String, output: String, is_error: bool, details: Option<serde_json::Value> },
     /// A message (assistant or tool-result) has been fully constructed and persisted.
     MessageComplete(Message),
     /// A non-fatal error occurred.
@@ -119,7 +119,6 @@ fn run<'a>(
                             usage: None,
                         }),
                         meta: None,
-                        extra: JsonMap::new(),
                     };
                     let _ = store.write_message(assistant_msg.clone());
                     message_ids.push(assistant_id);
@@ -161,7 +160,6 @@ fn run<'a>(
                     usage,
                 }),
                 meta: None,
-                extra: JsonMap::new(),
             };
             if let Err(e) = store.write_message(assistant_msg.clone()) {
                 yield AgentEvent::Error(e.to_string());
@@ -185,7 +183,7 @@ fn run<'a>(
             let mut results: Vec<ContentBlock> = Vec::new();
             for (call_id, call_name, call_input) in &calls {
                 if cancel.is_cancelled() {
-                    results.push(ContentBlock::tool_result_text(call_id, "Cancelled", true));
+                    results.push(ContentBlock::tool_result_with_details(call_id, "Cancelled", true, None));
                     continue;
                 }
 
@@ -201,6 +199,7 @@ fn run<'a>(
                     None => ToolOutput {
                         text: format!("Tool '{}' not found", call_name),
                         is_error: true,
+                        details: None,
                     },
                 };
 
@@ -208,9 +207,10 @@ fn run<'a>(
                     id: call_id.clone(),
                     output: output.text.clone(),
                     is_error: output.is_error,
+                    details: output.details.clone(),
                 };
 
-                results.push(ContentBlock::tool_result_text(call_id, &output.text, output.is_error));
+                results.push(ContentBlock::tool_result_with_details(call_id, &output.text, output.is_error, output.details));
             }
 
             // Persist tool results.

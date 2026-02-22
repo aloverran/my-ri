@@ -81,7 +81,7 @@ export interface SSEHandlers {
   thinking_delta?: (data: { delta: string }) => void;
   thinking_end?: () => void;
   tool_start?: (data: { id: string; name: string }) => void;
-  tool_end?: (data: { id: string; output: string; is_error: boolean }) => void;
+  tool_end?: (data: { id: string; output: string; is_error: boolean; details?: any }) => void;
   message_complete?: (data: any) => void;
   usage?: (data: any) => void;
   done?: () => void;

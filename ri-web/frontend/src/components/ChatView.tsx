@@ -61,7 +61,11 @@ export default function ChatView(props: ChatViewProps) {
     for (const msg of session()?.messages || []) {
       for (const block of msg.content) {
         if (block.type === 'tool_result') {
-          map.set(block.toolUseId, { content: block.content, is_error: block.is_error });
+          map.set(block.toolUseId, {
+            content: block.content,
+            is_error: block.is_error,
+            details: block.details
+          });
         }
       }
     }
