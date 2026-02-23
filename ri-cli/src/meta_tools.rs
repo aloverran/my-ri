@@ -58,6 +58,7 @@ impl Tool for RunAgentTool {
     }
 
     fn parameters(&self) -> Value {
+        let models = ri_ai::registry::available_model_ids().join(", ");
         json!({
             "type": "object",
             "properties": {
@@ -76,7 +77,7 @@ impl Tool for RunAgentTool {
                 },
                 "model_id": {
                     "type": "string",
-                    "description": "The model identifier to use for the turn."
+                    "description": format!("The model identifier to use for the turn. Available models: {}", models)
                 },
                 "model_params": {
                     "type": "object",
