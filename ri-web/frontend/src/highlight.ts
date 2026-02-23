@@ -98,79 +98,69 @@ export function highlight(code: string, lang: string): string {
   });
 }
 
+// Single source of truth: extension/alias -> canonical shiki language name.
+// Used by both normalizeLang (markdown code fences) and langFromPath (file results).
+const LANG_ALIASES: Record<string, string> = {
+  'rs': 'rust',
+  'ts': 'typescript',
+  'tsx': 'tsx',
+  'js': 'javascript',
+  'jsx': 'jsx',
+  'mjs': 'javascript',
+  'cjs': 'javascript',
+  'mts': 'typescript',
+  'cts': 'typescript',
+  'css': 'css',
+  'html': 'html',
+  'htm': 'html',
+  'json': 'json',
+  'jsonc': 'json',
+  'toml': 'toml',
+  'yaml': 'yaml',
+  'yml': 'yaml',
+  'sh': 'bash',
+  'bash': 'bash',
+  'zsh': 'bash',
+  'fish': 'bash',
+  'shell': 'shell',
+  'c': 'c',
+  'h': 'c',
+  'cpp': 'cpp',
+  'cc': 'cpp',
+  'cxx': 'cpp',
+  'hpp': 'cpp',
+  'hh': 'cpp',
+  'c++': 'cpp',
+  'cs': 'csharp',
+  'glsl': 'glsl',
+  'vert': 'glsl',
+  'frag': 'glsl',
+  'comp': 'glsl',
+  'py': 'python',
+  'md': 'markdown',
+  'diff': 'diff',
+  'patch': 'diff',
+  'sql': 'sql',
+  'xml': 'xml',
+  'svg': 'xml',
+  'lua': 'lua',
+  'zig': 'zig',
+  'go': 'go',
+  'swift': 'swift',
+  'hlsl': 'hlsl',
+  'wgsl': 'wgsl',
+};
+
 function normalizeLang(lang: string): string {
   const l = lang.toLowerCase().trim();
-  const aliases: Record<string, string> = {
-    'sh': 'bash',
-    'zsh': 'bash',
-    'fish': 'bash',
-    'ts': 'typescript',
-    'js': 'javascript',
-    'rs': 'rust',
-    'cs': 'csharp',
-    'c++': 'cpp',
-    'yml': 'yaml',
-    'py': 'python',
-    'md': 'markdown',
-    'jsonc': 'json',
-  };
-  return aliases[l] || l;
+  return LANG_ALIASES[l] || l;
 }
 
 // Infer a shiki language from a file path's extension.
 // Returns '' for unknown extensions (caller falls back to plain text).
 export function langFromPath(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, string> = {
-    'rs': 'rust',
-    'ts': 'typescript',
-    'tsx': 'tsx',
-    'js': 'javascript',
-    'jsx': 'jsx',
-    'mjs': 'javascript',
-    'cjs': 'javascript',
-    'mts': 'typescript',
-    'cts': 'typescript',
-    'css': 'css',
-    'html': 'html',
-    'htm': 'html',
-    'json': 'json',
-    'jsonc': 'json',
-    'toml': 'toml',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'sh': 'bash',
-    'bash': 'bash',
-    'zsh': 'bash',
-    'fish': 'bash',
-    'c': 'c',
-    'h': 'c',
-    'cpp': 'cpp',
-    'cc': 'cpp',
-    'cxx': 'cpp',
-    'hpp': 'cpp',
-    'hh': 'cpp',
-    'cs': 'csharp',
-    'glsl': 'glsl',
-    'vert': 'glsl',
-    'frag': 'glsl',
-    'comp': 'glsl',
-    'py': 'python',
-    'md': 'markdown',
-    'diff': 'diff',
-    'patch': 'diff',
-    'sql': 'sql',
-    'xml': 'xml',
-    'svg': 'xml',
-    'lua': 'lua',
-    'zig': 'zig',
-    'go': 'go',
-    'swift': 'swift',
-    'hlsl': 'hlsl',
-    'wgsl': 'wgsl',
-    'shell': 'shell',
-  };
-  return map[ext] || '';
+  return LANG_ALIASES[ext] || '';
 }
 
 function escapeHtml(s: string): string {
