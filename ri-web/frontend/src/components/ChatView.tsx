@@ -119,18 +119,6 @@ export default function ChatView(props: ChatViewProps) {
     if (model() === '') setModel(s.default_model);
   }).catch(() => {});
 
-  // Seed settings from session history on first load only.
-  let settingsSeeded = false;
-  createEffect(() => {
-    if (settingsSeeded || store.messages.length === 0) return;
-    settingsSeeded = true;
-    const prev = lastSuccessfulSettings(store.messages);
-    if (prev.model) setModel(prev.model);
-    if (prev.thinking && THINKING_LEVELS.includes(prev.thinking as ThinkingLevel)) {
-      setThinking(prev.thinking as ThinkingLevel);
-    }
-  });
-
   // -- Scroll management --
   // Track whether user is "following" the conversation (scrolled near bottom)
   // or has scrolled up to read earlier content. Only auto-scroll when following.
@@ -227,8 +215,14 @@ export default function ChatView(props: ChatViewProps) {
 
   onCleanup(() => { eventSource?.close(); });
 
-  // Initial load, then scroll to bottom so user sees latest messages.
+  // Initial load: seed settings from history, then scroll to bottom.
+  // Only runs once (resync calls loadSession directly without this callback).
   loadSession().then(() => {
+    const prev = lastSuccessfulSettings(store.messages);
+    if (prev.model) setModel(prev.model);
+    if (prev.thinking && THINKING_LEVELS.includes(prev.thinking as ThinkingLevel)) {
+      setThinking(prev.thinking as ThinkingLevel);
+    }
     requestAnimationFrame(scrollToBottom);
   });
 
