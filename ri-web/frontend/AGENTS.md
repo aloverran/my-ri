@@ -15,3 +15,7 @@ We are very thoughtful with how we use types. Typescript is very hard to write i
 For us, frontend isn't cheap, throwaway code. I am a senior engineer and I want it to be robust. We don't write it to be easily usable by random junior web-devs. We write it smart, and clear, and with an eye to the overall architecture of the codebase.
 
 JSX can get hard to read with lots of HTML, so we use comments deliberately to make it easier to skim. We also like to comment chunkier components to explain why they exist and how they engage with the rest of the system.
+
+# Coding Guidelines
+
+In general, 1-2 line functions are a smell. Because we don't generally build abstractions for future-proofing, there's no need to build API layers that we can later swap out. This is also why we don't use getters and setters. We don't work with a team, nor with other people, so we can *always* refactor downstream consumers if we change the underlying APIs. This gives us the benefit of simpler code that is easier to read and follow. 
