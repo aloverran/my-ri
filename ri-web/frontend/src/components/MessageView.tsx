@@ -142,7 +142,9 @@ function ThinkingBlock(props: { text: string }) {
         </Show>
       </button>
       <Show when={open()}>
-        <div class="collapsible-body"><pre>{props.text}</pre></div>
+        <div class="collapsible-body">
+          <div class="md-text md-thinking" innerHTML={marked(props.text) as string} />
+        </div>
       </Show>
     </div>
   );
@@ -201,7 +203,9 @@ function SystemMessage(props: { message: Message; mode: DisplayMode }) {
         <span class="collapsible-preview">{truncate(firstLine(text()), 60)}</span>
       </button>
       <Show when={open()}>
-        <div class="collapsible-body"><pre>{text()}</pre></div>
+        <div class="collapsible-body">
+          <div class="md-text md-system" innerHTML={marked(text()) as string} />
+        </div>
       </Show>
       <Show when={props.mode === 'debug'}>
         <span class="msg-id">{props.message.id}</span>
@@ -460,7 +464,9 @@ export default function MessageView(props: MessageViewProps) {
                 <span class="compact-tool-preview">{names()}</span>
               </button>
               <Show when={open()}>
-                <div class="collapsible-body"><pre>{text()}</pre></div>
+                <div class="collapsible-body">
+                  <div class="md-text md-context" innerHTML={marked(text()) as string} />
+                </div>
               </Show>
             </div>
           );

@@ -394,6 +394,25 @@ input:disabled, textarea:disabled { opacity: 0.5; }
 
 /* -- Markdown content -- */
 .md-text { line-height: 1.5; }
+
+/* Thinking: internal monologue -- dimmed text, quiet left border */
+.md-text.md-thinking {
+  color: var(--text-1);
+  border-left: 2px solid var(--text-2);
+  padding-left: 10px;
+}
+/* System prompt: instructions/rules -- warm left border */
+.md-text.md-system {
+  color: var(--text-1);
+  border-left: 2px solid color-mix(in srgb, var(--warning) 50%, transparent);
+  padding-left: 10px;
+}
+/* Context files: reference documents -- cool left border */
+.md-text.md-context {
+  color: var(--text-1);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  padding-left: 10px;
+}
 .md-text p { margin: 0 0 6px 0; }
 .md-text p:last-child { margin-bottom: 0; }
 .md-text pre {

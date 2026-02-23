@@ -271,7 +271,7 @@ export default function ChatView(props: ChatViewProps) {
                     <span class="collapsible-label">thinking</span>
                   </div>
                   <div class="collapsible-body">
-                    <div class="md-text streaming-cursor" innerHTML={marked(streamingThinking()) as string} />
+                    <div class="md-text md-thinking streaming-cursor" innerHTML={marked(streamingThinking()) as string} />
                   </div>
                 </div>
               </Show>
