@@ -514,54 +514,25 @@ fn read_session_messages(
 fn format_session_output(
     mut messages: Vec<Message>,
     limit: Option<usize>,
-    content_limit: Option<usize>,
+    _content_limit: Option<usize>,
 ) -> ToolOutput {
     if let Some(n) = limit {
         messages.truncate(n);
     }
-    if let Some(max_bytes) = content_limit {
-        for msg in &mut messages {
-            truncate_content_blocks(&mut msg.content, max_bytes);
-        }
-    }
-    let text = serde_json::to_string_pretty(&messages).unwrap_or_default();
+
+    let summaries: Vec<Value> = messages.iter().map(|msg| {
+        json!({
+            "id": msg.id,
+            "summary": msg.summarize(),
+        })
+    }).collect();
+
+    let text = serde_json::to_string_pretty(&summaries).unwrap_or_default();
     ToolOutput {
         text,
         is_error: false,
-        details: Some(serde_json::to_value(&messages).unwrap_or_default()),
+        details: Some(Value::Array(summaries)),
     }
-}
-
-fn truncate_content_blocks(blocks: &mut Vec<ContentBlock>, max_bytes: usize) {
-    for block in blocks.iter_mut() {
-        match block {
-            ContentBlock::Text { text } => {
-                if text.len() > max_bytes {
-                    let truncated = truncate_str(text, max_bytes);
-                    *text = format!("{}... ({} bytes truncated)", truncated, text.len() - max_bytes);
-                }
-            }
-            ContentBlock::Thinking { thinking, .. } => {
-                if thinking.len() > max_bytes {
-                    let truncated = truncate_str(thinking, max_bytes);
-                    *thinking = format!("{}... ({} bytes truncated)", truncated, thinking.len() - max_bytes);
-                }
-            }
-            ContentBlock::ToolResult { content, .. } => {
-                truncate_content_blocks(content, max_bytes);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max { return s; }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Option<Message> {
