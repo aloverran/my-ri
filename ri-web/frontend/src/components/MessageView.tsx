@@ -456,9 +456,9 @@ export default function MessageView(props: MessageViewProps) {
           const names = () => paths().map(p => p.split('/').pop() || p).join(', ');
           const text = () => extractText(props.message.content);
           return (
-            <div class="compact-tool compact-tool-done" style="margin-left: 12px;">
+            <div class="compact-tool compact-tool-done compact-tool-context">
               <button class="compact-tool-line" onclick={() => setOpen(!open())}>
-                <span class="compact-tool-name" style="color: var(--text-2);">context</span>
+                <span class="compact-tool-name compact-tool-name-context">context</span>
                 <span class="compact-tool-preview">{names()}</span>
               </button>
               <Show when={open()}>

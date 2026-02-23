@@ -644,6 +644,10 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   color: var(--text-2);
 }
 
+/* Context discovery lines: indented and dimmed to distinguish from tool calls */
+.compact-tool-context { margin-left: 12px; }
+.compact-tool-name-context { color: var(--text-2); }
+
 /* Expanded tool output in compact mode */
 .tool-output-ok {
   border-left: 2px solid var(--success);
