@@ -30,7 +30,7 @@ function lastSuccessfulSettings(messages: Message[]): { model?: string; thinking
     if (!hasError) {
       return {
         model: m.provenance.model,
-        thinking: (m.meta as any)?.thinking,
+        thinking: m.meta?.thinking as string | undefined,
       };
     }
   }
@@ -202,10 +202,10 @@ export default function ChatView(props: ChatViewProps) {
 
           // Update settings from the just-completed assistant message.
           if (msg.role === 'assistant' && msg.provenance) {
-            const hasError = msg.content?.some((b: any) => b.type === 'error');
+            const hasError = msg.content?.some(b => b.type === 'error');
             if (!hasError) {
               if (msg.provenance.model) setModel(msg.provenance.model);
-              const msgThinking = (msg.meta as any)?.thinking;
+              const msgThinking = msg.meta?.thinking as string | undefined;
               if (msgThinking && THINKING_LEVELS.includes(msgThinking as ThinkingLevel)) {
                 setThinking(msgThinking as ThinkingLevel);
               }

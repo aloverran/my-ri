@@ -27,7 +27,7 @@ export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; sig?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; toolUseId: string; content: ContentBlock[]; is_error: boolean; details?: any }
+  | { type: "tool_result"; toolUseId: string; content: ContentBlock[]; is_error: boolean; details?: Record<string, unknown> }
   | { type: "image"; mediaType: string; data: string }
   | { type: "error"; message: string };
 

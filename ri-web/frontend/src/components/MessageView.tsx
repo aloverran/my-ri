@@ -7,7 +7,7 @@ import { highlight, highlightInline, langFromPath } from '../highlight';
 export interface ToolResultInfo {
   content: ContentBlock[];
   is_error: boolean;
-  details?: any;
+  details?: Record<string, unknown>;
 }
 
 function truncate(s: string, max: number): string {
@@ -295,20 +295,20 @@ function CompactToolCall(props: {
                         exit {details.exit_code}
                       </span>
                     </div>
-                    <Show when={details.stdout}>
-                      <pre class="bash-stdout">{details.stdout}</pre>
+                    <Show when={details.stdout as string | undefined}>
+                      <pre class="bash-stdout">{details.stdout as string}</pre>
                     </Show>
-                    <Show when={details.stderr}>
-                      <pre class="bash-stderr">{details.stderr}</pre>
+                    <Show when={details.stderr as string | undefined}>
+                      <pre class="bash-stderr">{details.stderr as string}</pre>
                     </Show>
                   </div>
                 );
               }
 
               if (props.name === 'read' && details && typeof details.total_lines === 'number') {
-                const lang = langFromPath(details.path || '');
-                const off = details.offset ?? 1;
-                const lim = details.limit ?? details.total_lines;
+                const lang = langFromPath((details.path as string) || '');
+                const off = (details.offset as number | undefined) ?? 1;
+                const lim = (details.limit as number | undefined) ?? details.total_lines;
                 const end = Math.min(off + lim - 1, details.total_lines);
                 const rangeLabel = (off === 1 && end >= details.total_lines)
                   ? `${details.total_lines} lines`
@@ -327,11 +327,11 @@ function CompactToolCall(props: {
                     <div class="edit-diff">
                       <div class="diff-removed">
                         <span class="diff-sign">-</span>
-                        <pre>{details.old_text}</pre>
+                        <pre>{details.old_text as string}</pre>
                       </div>
                       <div class="diff-added">
                         <span class="diff-sign">+</span>
-                        <pre>{details.new_text}</pre>
+                        <pre>{details.new_text as string}</pre>
                       </div>
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import { SessionSummary, SessionDetail } from './types';
+import { SessionSummary, SessionDetail, Message, Usage } from './types';
 
 // API helpers
 const apiUrl = (path: string) => `/api${path}`;
@@ -81,13 +81,13 @@ export interface SSEHandlers {
   thinking_delta?: (data: { delta: string }) => void;
   thinking_end?: () => void;
   tool_start?: (data: { id: string; name: string }) => void;
-  tool_end?: (data: { id: string; output: string; is_error: boolean; details?: any }) => void;
-  message_complete?: (data: any) => void;
-  usage?: (data: any) => void;
+  tool_end?: (data: { id: string; output: string; is_error: boolean; details?: Record<string, unknown> }) => void;
+  message_complete?: (data: Message) => void;
+  usage?: (data: Usage) => void;
   done?: () => void;
   agent_error?: (data: { message: string }) => void;
   resync?: () => void;
-  error?: (error: any) => void;
+  error?: (error: Event) => void;
 }
 
 // SSE connection
