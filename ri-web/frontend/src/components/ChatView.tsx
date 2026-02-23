@@ -283,11 +283,19 @@ export default function ChatView(props: ChatViewProps) {
     return m?.context_window || 0;
   };
 
+  const copySessionId = (el: HTMLElement) => {
+    navigator.clipboard.writeText(props.sessionId);
+    const orig = el.textContent;
+    el.textContent = 'copied!';
+    setTimeout(() => { el.textContent = orig; }, 800);
+  };
+
   return (
     <div class="chat-view">
       <header class="chat-header">
         <button class="back" onclick={props.onBack}>{'\u2190'}</button>
         <span class="name">{store.name || '...'}</span>
+        <span class="session-id" onclick={(e) => copySessionId(e.currentTarget)} title="Click to copy">{props.sessionId}</span>
         <span class={`status ${store.status}`}>
           {store.status}
         </span>
