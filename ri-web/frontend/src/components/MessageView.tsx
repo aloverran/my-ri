@@ -438,12 +438,37 @@ export default function MessageView(props: MessageViewProps) {
     props.message.role === 'user' &&
     props.message.content.every(b => b.type === 'tool_result');
 
+  // Agents context discovery messages: collapsed in compact, full in debug.
+  const agentsContext = () =>
+    props.message.meta?.agents_context as string[] | undefined;
+
   const isCompact = () => props.mode === 'compact';
 
   // Use Show for reactive visibility -- early returns are not reactive in SolidJS.
   return (
-    <Show when={!(isCompact() && isToolOnlyUser())}>
-      <div class="msg">
+    <>
+      {/* Compact agents_context: a single collapsible line styled like a tool call */}
+      <Show when={isCompact() && agentsContext()}>
+        {(paths) => {
+          const [open, setOpen] = createSignal(false);
+          const names = () => paths().map(p => p.split('/').pop() || p).join(', ');
+          const text = () => extractText(props.message.content);
+          return (
+            <div class="compact-tool compact-tool-done" style="margin-left: 12px;">
+              <button class="compact-tool-line" onclick={() => setOpen(!open())}>
+                <span class="compact-tool-name" style="color: var(--text-2);">context</span>
+                <span class="compact-tool-preview">{names()}</span>
+              </button>
+              <Show when={open()}>
+                <div class="collapsible-body"><pre>{text()}</pre></div>
+              </Show>
+            </div>
+          );
+        }}
+      </Show>
+      {/* Normal rendering (hidden for tool-only and agents_context in compact) */}
+      <Show when={!(isCompact() && (isToolOnlyUser() || agentsContext()))}>
+        <div class="msg">
         {/* Message header: role + timestamp + optional debug id */}
         <div class="msg-meta">
           <span class={`msg-role role-${displayRole()}`}>{displayRole()}</span>
@@ -479,5 +504,6 @@ export default function MessageView(props: MessageViewProps) {
         </Show>
       </div>
     </Show>
+    </>
   );
 }
