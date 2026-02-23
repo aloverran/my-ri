@@ -1,4 +1,5 @@
-import { createSignal, createResource, createEffect, createMemo, onCleanup, onMount, For, Show } from 'solid-js';
+import { createSignal, createEffect, createMemo, onCleanup, For, Show } from 'solid-js';
+import { createStore, reconcile } from 'solid-js/store';
 import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getModels, ModelInfo } from '../api';
 import { marked } from 'marked';
 import { Message, Usage, DisplayMode } from '../types';
@@ -36,8 +37,50 @@ function lastSuccessfulSettings(messages: Message[]): { model?: string; thinking
   return {};
 }
 
+// -- Session store shape --
+// Populated once by initial fetch, then updated incrementally by SSE events.
+// Messages are keyed by id, so reconcile preserves store proxies and <For>
+// keeps existing components alive (preserving foldout state, scroll, etc).
+interface SessionState {
+  name: string;
+  cwd: string;
+  status: 'idle' | 'running';
+  messages: Message[];
+  loading: boolean;
+  error: string | null;
+}
+
 export default function ChatView(props: ChatViewProps) {
-  const [session, { refetch }] = createResource(() => props.sessionId, getSession);
+  // -- Session data store --
+  const [store, setStore] = createStore<SessionState>({
+    name: '',
+    cwd: '',
+    status: 'idle',
+    messages: [],
+    loading: true,
+    error: null,
+  });
+
+  // Full session fetch. Used on initial load and resync (missed SSE events).
+  // reconcile({ key: 'id' }) diffs messages by their stable id, preserving
+  // existing store proxies so <For> keeps components (and their local state) alive.
+  async function loadSession() {
+    setStore('loading', true);
+    setStore('error', null);
+    try {
+      const data = await getSession(props.sessionId);
+      setStore({ name: data.name, cwd: data.cwd, status: data.status, loading: false });
+      // Merge: keep any messages already in store (from SSE) that arrived
+      // during the fetch. This handles the race where SSE delivers a message
+      // while the GET is in flight and the response doesn't include it yet.
+      const fetchedIds = new Set(data.messages.map(m => m.id));
+      const extra = store.messages.filter(m => !fetchedIds.has(m.id));
+      setStore('messages', reconcile([...data.messages, ...extra], { key: 'id' }));
+    } catch (e) {
+      setStore({ loading: false, error: String(e) });
+    }
+  }
+
   const [messageText, setMessageText] = createSignal('');
   const [sending, setSending] = createSignal(false);
   const [streamingText, setStreamingText] = createSignal('');
@@ -50,15 +93,14 @@ export default function ChatView(props: ChatViewProps) {
   const [thinking, setThinking] = createSignal<ThinkingLevel | null>(null);
   const [models, setModels] = createSignal<ModelInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [defaultsLoaded, setDefaultsLoaded] = createSignal(false);
   const [displayMode, setDisplayMode] = createSignal<DisplayMode>('compact');
 
   // Build a lookup from toolUseId -> result info, derived from all messages.
-  // In compact mode, tool_use blocks in assistant messages will look up their
+  // In compact mode, tool_use blocks in assistant messages look up their
   // corresponding tool_result to show a merged single-line view.
   const toolResults = createMemo(() => {
     const map = new Map<string, ToolResultInfo>();
-    for (const msg of session()?.messages || []) {
+    for (const msg of store.messages) {
       for (const block of msg.content) {
         if (block.type === 'tool_result') {
           map.set(block.toolUseId, {
@@ -72,42 +114,42 @@ export default function ChatView(props: ChatViewProps) {
     return map;
   });
 
-  // Load available models and server defaults once.
+  // -- Server defaults (loaded once) --
   const [serverThinking, setServerThinking] = createSignal<ThinkingLevel>('medium');
-  onMount(() => {
-    getModels().then(setModels).catch(() => {});
-    getSettings().then(s => {
-      if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
-        setServerThinking(s.default_thinking as ThinkingLevel);
-      }
-      // Only apply server defaults if session history hasn't already set them.
-      if (!defaultsLoaded()) {
-        if (model() == '') setModel(s.default_model);
-      }
-    }).catch(() => {});
-  });
+  getModels().then(setModels).catch(() => {});
+  getSettings().then(s => {
+    if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
+      setServerThinking(s.default_thinking as ThinkingLevel);
+    }
+    // Only apply server default if session history hasn't already set model.
+    if (model() === '') setModel(s.default_model);
+  }).catch(() => {});
 
   // Seed settings from session history on first load only.
-  let initialLoadDone = false;
+  let settingsSeeded = false;
   createEffect(() => {
-    const s = session();
-    if (!s || initialLoadDone) return;
-    initialLoadDone = true;
-    const prev = lastSuccessfulSettings(s.messages);
+    if (settingsSeeded || store.messages.length === 0) return;
+    settingsSeeded = true;
+    const prev = lastSuccessfulSettings(store.messages);
     if (prev.model) setModel(prev.model);
     if (prev.thinking && THINKING_LEVELS.includes(prev.thinking as ThinkingLevel)) {
       setThinking(prev.thinking as ThinkingLevel);
     }
-    setDefaultsLoaded(true);
   });
 
+  // -- Scroll management --
+  // Track whether user is "following" the conversation (scrolled near bottom)
+  // or has scrolled up to read earlier content. Only auto-scroll when following.
   let messagesEl!: HTMLDivElement;
   let textareaEl!: HTMLTextAreaElement;
   let settingsRef!: HTMLDivElement;
-  let eventSource: EventSource | null = null;
+  const [following, setFollowing] = createSignal(true);
 
   const scrollToBottom = () => {
     if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
+  const scrollIfFollowing = () => {
+    if (following()) requestAnimationFrame(scrollToBottom);
   };
 
   const resizeTextarea = () => {
@@ -122,10 +164,15 @@ export default function ChatView(props: ChatViewProps) {
       setSettingsOpen(false);
     }
   };
-  onMount(() => document.addEventListener('mousedown', handleClickOutside));
+  document.addEventListener('mousedown', handleClickOutside);
   onCleanup(() => document.removeEventListener('mousedown', handleClickOutside));
 
-  // SSE connection
+  // -- SSE connection --
+  // Incremental updates: message_complete appends directly to the store,
+  // so <For> only creates a component for the new message. Existing
+  // components (and their foldout open/closed state) are untouched.
+  let eventSource: EventSource | null = null;
+
   createEffect(() => {
     if (props.sessionId) {
       eventSource?.close();
@@ -136,16 +183,24 @@ export default function ChatView(props: ChatViewProps) {
         },
         text_delta: (data) => {
           setStreamingText(prev => prev + data.delta);
-          scrollToBottom();
+          scrollIfFollowing();
         },
         thinking_start: () => { setStreamingThinking(''); },
         thinking_delta: (data) => {
           setStreamingThinking(prev => prev + data.delta);
-          scrollToBottom();
+          scrollIfFollowing();
         },
-        message_complete: async (msg: Message) => {
+        message_complete: (msg: Message) => {
           setIsStreaming(false);
-          // Update settings from the just-completed message.
+          setStreamingText('');
+          setStreamingThinking('');
+
+          // Append to store (idempotent -- skip if already present from loadSession).
+          if (!store.messages.some(m => m.id === msg.id)) {
+            setStore('messages', store.messages.length, msg);
+          }
+
+          // Update settings from the just-completed assistant message.
           if (msg.role === 'assistant' && msg.provenance) {
             const hasError = msg.content?.some((b: any) => b.type === 'error');
             if (!hasError) {
@@ -156,23 +211,21 @@ export default function ChatView(props: ChatViewProps) {
               }
             }
           }
-          try { await refetch(); }
-          finally {
-            setStreamingText('');
-            setStreamingThinking('');
-            scrollToBottom();
-          }
+
+          scrollIfFollowing();
         },
         usage: (data) => { setUsage(data); },
         done: () => {
           setIsStreaming(false);
-          refetch();
+          setStore('status', 'idle');
         },
         agent_error: () => {
           setIsStreaming(false);
-          refetch();
+          // Agent may have died without sending Done. Refetch to get true state.
+          // reconcile preserves existing message components.
+          loadSession();
         },
-        resync: () => { refetch(); },
+        resync: () => { loadSession(); },
         error: () => { setIsStreaming(false); },
       });
     }
@@ -180,9 +233,9 @@ export default function ChatView(props: ChatViewProps) {
 
   onCleanup(() => { eventSource?.close(); });
 
-  // Auto-scroll when session loads
-  createEffect(() => {
-    if (session()) setTimeout(scrollToBottom, 50);
+  // Initial load, then scroll to bottom so user sees latest messages.
+  loadSession().then(() => {
+    requestAnimationFrame(scrollToBottom);
   });
 
   const handleSend = async (e: Event) => {
@@ -195,7 +248,8 @@ export default function ChatView(props: ChatViewProps) {
       await sendMessage(props.sessionId, text, model() || undefined, thinking() || undefined);
       setMessageText('');
       if (textareaEl) textareaEl.style.height = 'auto';
-      refetch();
+      // Agent loop is now running. User message will arrive via SSE message_complete.
+      setStore('status', 'running');
     } catch (err) {
       console.error('Send failed:', err);
     } finally {
@@ -218,7 +272,7 @@ export default function ChatView(props: ChatViewProps) {
     setThinking(next);
   };
 
-  const isRunning = () => session()?.status === 'running' || isStreaming();
+  const isRunning = () => store.status === 'running' || isStreaming();
 
   // Raw model id for display.
   const modelDisplay = () => model() || '?';
@@ -233,9 +287,9 @@ export default function ChatView(props: ChatViewProps) {
     <div class="chat-view">
       <header class="chat-header">
         <button class="back" onclick={props.onBack}>{'\u2190'}</button>
-        <span class="name">{session()?.name || '...'}</span>
-        <span class={`status ${session()?.status || ''}`}>
-          {session()?.status || ''}
+        <span class="name">{store.name || '...'}</span>
+        <span class={`status ${store.status}`}>
+          {store.status}
         </span>
         <Show when={isRunning()}>
           <button class="danger" onclick={handleCancel}>Cancel</button>
@@ -248,12 +302,18 @@ export default function ChatView(props: ChatViewProps) {
         >{displayMode()}</button>
       </header>
 
-      <div class="messages" ref={messagesEl}>
-        <Show when={session.loading}><div class="loading">Loading...</div></Show>
-        <Show when={session.error}><div class="error-text">Failed to load session</div></Show>
+      <div class="messages" ref={(el) => {
+        messagesEl = el;
+        // Track scroll position: following = near bottom, not following = scrolled up.
+        el.addEventListener('scroll', () => {
+          setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+        }, { passive: true });
+      }}>
+        <Show when={store.loading}><div class="loading">Loading...</div></Show>
+        <Show when={store.error}><div class="error-text">Failed to load session</div></Show>
 
-        <For each={session()?.messages}>
-          {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} cwd={session()?.cwd || ''} />}
+        <For each={store.messages}>
+          {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} cwd={store.cwd} />}
         </For>
 
         {/* Streaming preview */}
@@ -343,7 +403,7 @@ export default function ChatView(props: ChatViewProps) {
       </form>
 
       <div class="chat-footer">
-        <span>{session()?.cwd || ''}</span>
+        <span>{store.cwd}</span>
         <span class="footer-model">{modelDisplay()}</span>
         <span class="footer-thinking">{effectiveThinking()}</span>
         <Show when={usage() && contextWindow()}>
