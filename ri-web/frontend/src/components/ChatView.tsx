@@ -2,17 +2,11 @@ import { createSignal, createEffect, createMemo, onCleanup, For, Show } from 'so
 import { createStore, reconcile } from 'solid-js/store';
 import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getModels, ModelInfo } from '../api';
 import { marked } from 'marked';
-import { Message, Usage, DisplayMode } from '../types';
+import { Message, Usage, DisplayMode, fmtTokens } from '../types';
 import MessageView, { ToolResultInfo } from './MessageView';
 
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-  return n.toString();
-}
 
 interface ChatViewProps {
   sessionId: string;

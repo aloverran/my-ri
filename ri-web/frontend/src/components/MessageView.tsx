@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from 'solid-js';
 import { marked } from 'marked';
-import { Message, ContentBlock, DisplayMode, Usage } from '../types';
+import { Message, ContentBlock, DisplayMode, Usage, fmtTokens } from '../types';
 import { highlight, highlightInline, langFromPath } from '../highlight';
 
 /** Data needed to resolve tool_use -> tool_result in compact mode. */
@@ -41,14 +41,6 @@ function extractText(blocks: ContentBlock[]): string {
 
 function firstLine(text: string): string {
   return text.split('\n').find(l => l.trim() !== '')?.trim() || '';
-}
-
-// --- Token formatting ---
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-  return n.toString();
 }
 
 function UsageStats(props: { usage: Usage; model: string }) {
