@@ -50,10 +50,11 @@ impl Tool for RunAgentTool {
     fn name(&self) -> &str { "runAgent" }
 
     fn description(&self) -> &str {
-        "Run an LLM agent loop asynchronously. The agent resolves messages, \
-         calls the model, executes tool calls, and repeats until the model \
-         stops. All resulting messages are written to the store and the \
-         session is updated. Returns immediately with the session ID."
+        "Starts a single turn of an LLM agent, async, writing the resulting \
+         assistant messages and tool call user messages back into the message \
+         store, and updating the session to point at the final message. \
+         Session can be a new name and the corresponding session will be \
+         created. If not provided a random one will be created and returned."
     }
 
     fn parameters(&self) -> Value {
@@ -63,22 +64,23 @@ impl Tool for RunAgentTool {
                 "message_ids": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Message IDs forming the prompt history."
+                    "description": "A list of message ids making up the prompt history for this turn to start from."
                 },
                 "user_prompt": {
                     "type": "string",
-                    "description": "Text to append as a user message before starting."
+                    "description": "Text to append as a user message just before initiating the new turn."
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Session to update. Omit to create a new one."
+                    "description": "The session to update with the turn. Use an existing session to extend it, or skip and a random id will be created."
                 },
                 "model_id": {
                     "type": "string",
-                    "description": "Model identifier (e.g. 'claude-sonnet-4-20250514')."
+                    "description": "The model identifier to use for the turn."
                 },
                 "model_params": {
                     "type": "object",
+                    "description": "Parameters to pass to the model.",
                     "properties": {
                         "thinking": { "type": "string", "description": "Thinking level: off, low, medium, high, xhigh" },
                         "max_tokens": { "type": "integer", "description": "Maximum output tokens." }
@@ -324,8 +326,10 @@ impl Tool for ReadSessionTool {
     fn name(&self) -> &str { "readSession" }
 
     fn description(&self) -> &str {
-        "Read a session's message history in reverse-chronological order. \
-         Each entry includes the message ID, role, content, and provenance."
+        "Returns the reflog of the given session, in reverse-chronological \
+         order (first is the current session pointer). Each entry contains \
+         the message_id. Use the optional parameters to control how much of \
+         the session to read or limit content blocks to a certain number of bytes."
     }
 
     fn parameters(&self) -> Value {
@@ -389,8 +393,9 @@ impl Tool for ReadMessageTool {
     fn name(&self) -> &str { "readMessage" }
 
     fn description(&self) -> &str {
-        "Read a single message by ID. Returns the full text, provenance \
-         (input message IDs, model, timestamp, usage), and metadata."
+        "Returns the full text of a single message, and the provenance & \
+         metadata associated with its creation. Useful for precise reading \
+         of message data when you want to inspect a message id."
     }
 
     fn parameters(&self) -> Value {
