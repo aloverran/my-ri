@@ -4,7 +4,8 @@
 //! events through a tokio::sync::broadcast channel. Multiple SSE clients
 //! can observe the same run simultaneously.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -256,6 +257,9 @@ async fn run_agent_loop(
             msg
         };
         let _ = tx.send(AgentEvent::MessageComplete(tool_msg));
+
+        // Discover and inject AGENTS.md files near files accessed by tool calls.
+        inject_discovered_agents(&calls, &cwd, session, &tx).await?;
     }
 
     let _ = tx.send(AgentEvent::Done);
@@ -267,4 +271,80 @@ async fn run_agent_loop(
 pub fn build_system_prompt(cwd: &std::path::Path) -> String {
     let context_files = ri_tools::resources::discover_context_files(cwd);
     ri_tools::resources::build_system_prompt(&context_files)
+}
+
+/// Discover AGENTS.md files near files that tool calls accessed, and inject
+/// any new ones as a user message. The set of already-injected files is derived
+/// from `agents_context` meta tags in the current message history, so it stays
+/// correct across compaction and session repointing.
+async fn inject_discovered_agents(
+    calls: &[(String, String, serde_json::Value)],
+    cwd: &Path,
+    session: &Arc<Mutex<SessionState>>,
+    tx: &tokio::sync::broadcast::Sender<AgentEvent>,
+) -> eyre::Result<()> {
+    // Rebuild seen set from current history each time -- history can change
+    // between loop iterations (compaction, repointing).
+    let mut seen: HashSet<PathBuf> = {
+        let lock = session.lock().await;
+        lock.store.pool.resolve_existing(&lock.message_ids).iter()
+            .filter_map(|m| m.meta.as_ref()?.get("agents_context")?.as_array())
+            .flatten()
+            .filter_map(|v| v.as_str().map(PathBuf::from))
+            .collect()
+    };
+
+    let mut new_files = Vec::new();
+    for (_, name, input) in calls {
+        let path_str = match name.as_str() {
+            "read" | "write" | "edit" | "Read" | "Write" | "Edit" => {
+                match input.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p,
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
+        let resolved = if Path::new(path_str).is_absolute() {
+            PathBuf::from(path_str)
+        } else {
+            cwd.join(path_str)
+        };
+        let dir = match resolved.parent() {
+            Some(d) => d,
+            None => continue,
+        };
+        for cf in ri_tools::resources::find_context_files(dir) {
+            let canonical = cf.path.canonicalize().unwrap_or_else(|_| cf.path.clone());
+            if seen.insert(canonical) {
+                new_files.push(cf);
+            }
+        }
+    }
+
+    if new_files.is_empty() { return Ok(()); }
+
+    let mut text = String::from("# Context Files (discovered)\n");
+    let mut paths = Vec::new();
+    for cf in &new_files {
+        text.push_str(&format!("\n## {}\n\n{}\n", cf.path.display(), cf.content));
+        if let Ok(c) = cf.path.canonicalize() {
+            if let Some(s) = c.to_str() { paths.push(s.to_string()); }
+        }
+    }
+
+    let mut lock = session.lock().await;
+    let id = lock.store.next_id();
+    let msg = Message {
+        id: id.clone(),
+        role: Role::User,
+        content: vec![ContentBlock::text(text)],
+        provenance: None,
+        meta: Some(serde_json::json!({ "agents_context": paths })),
+    };
+    lock.store.write_message(msg.clone())?;
+    lock.message_ids.push(id);
+    drop(lock);
+    let _ = tx.send(AgentEvent::MessageComplete(msg));
+    Ok(())
 }
