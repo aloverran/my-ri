@@ -238,6 +238,7 @@ export default function ChatView(props: ChatViewProps) {
     if (!text || sending()) return;
 
     setSending(true);
+    setStore('error', null);
     try {
       await sendMessage(props.sessionId, text, model() || undefined, thinking() || undefined);
       setMessageText('');
@@ -245,7 +246,7 @@ export default function ChatView(props: ChatViewProps) {
       // Agent loop is now running. User message will arrive via SSE message_complete.
       setStore('status', 'running');
     } catch (err) {
-      console.error('Send failed:', err);
+      setStore('error', `Send failed: ${err}`);
     } finally {
       setSending(false);
     }
@@ -253,7 +254,7 @@ export default function ChatView(props: ChatViewProps) {
 
   const handleCancel = async () => {
     try { await cancelSession(props.sessionId); }
-    catch (err) { console.error('Cancel failed:', err); }
+    catch (err) { setStore('error', `Cancel failed: ${err}`); }
   };
 
   // Effective thinking: user/history override, or server default.
@@ -312,7 +313,7 @@ export default function ChatView(props: ChatViewProps) {
         }, { passive: true });
       }}>
         <Show when={store.loading}><div class="loading">Loading...</div></Show>
-        <Show when={store.error}><div class="error-text">Failed to load session</div></Show>
+        <Show when={store.error}><div class="error-text">{store.error}</div></Show>
 
         <For each={store.messages}>
           {(message) => <MessageView message={message} mode={displayMode()} toolResults={toolResults()} cwd={store.cwd} />}
