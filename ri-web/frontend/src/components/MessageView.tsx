@@ -96,6 +96,38 @@ function UsageStats(props: { usage: Usage; model: string }) {
   );
 }
 
+// --- Debug info components ---
+
+function MetaBlock(props: { meta: Record<string, unknown> }) {
+  const [open, setOpen] = createSignal(false);
+  const entries = () => Object.entries(props.meta);
+  return (
+    <div class="msg-meta-block">
+      <button class="collapsible-header" onclick={() => setOpen(!open())}>
+        <span class="collapsible-chevron">{open() ? '\u25BE' : '\u25B8'}</span>
+        <span class="collapsible-label">meta</span>
+        <Show when={!open()}>
+          <span class="collapsible-preview">{entries().map(([k]) => k).join(', ')}</span>
+        </Show>
+      </button>
+      <Show when={open()}>
+        <div class="collapsible-body">
+          <For each={entries()}>
+            {([key, value]) => (
+              <div class="meta-row">
+                <span class="meta-key">{key}</span>
+                <span class="meta-val">
+                  {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 // --- Collapsible sub-components (debug mode) ---
 
 function ThinkingBlock(props: { text: string }) {
@@ -439,6 +471,11 @@ export default function MessageView(props: MessageViewProps) {
             usage={props.message.provenance!.usage!}
             model={props.message.provenance!.model}
           />
+        </Show>
+
+        {/* Meta values toggle (debug only) */}
+        <Show when={props.mode === 'debug' && props.message.meta && Object.keys(props.message.meta).length > 0}>
+          <MetaBlock meta={props.message.meta!} />
         </Show>
       </div>
     </Show>

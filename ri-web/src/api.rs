@@ -127,10 +127,23 @@ async fn create_session(
         .unwrap_or("")
         .to_string();
 
-    // Write system prompt as first message.
-    let system_prompt = crate::agent::build_system_prompt(&cwd);
+    // Write system prompt as first message, tagged with discovered context file
+    // paths so they participate in the agents_context seen system.
+    let context_files = ri_tools::resources::discover_context_files(&cwd);
+    let system_prompt = ri_tools::resources::build_system_prompt(&context_files);
+    let context_paths: Vec<String> = context_files.iter()
+        .filter_map(|cf| cf.path.canonicalize().ok()?.to_str().map(str::to_string))
+        .collect();
     let sys_id = store.next_id();
-    let sys_msg = Message::new(sys_id.clone(), ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)]);
+    let sys_msg = ri::Message {
+        id: sys_id.clone(),
+        role: ri::Role::System,
+        content: vec![ri::ContentBlock::text(&system_prompt)],
+        provenance: None,
+        meta: if context_paths.is_empty() { None } else {
+            Some(serde_json::json!({ "agents_context": context_paths }))
+        },
+    };
     store.write_message(sys_msg)?;
 
     let (events_tx, _) = broadcast::channel(256);

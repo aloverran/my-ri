@@ -634,7 +634,7 @@ input:disabled, textarea:disabled { opacity: 0.5; }
 .msg-id {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.25);
   margin-left: auto;
   flex-shrink: 0;
   user-select: all;
@@ -695,6 +695,30 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   color: var(--text-2);
   word-break: break-all;
 }
+/* -- Debug mode meta block -- */
+.msg-meta-block {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  border-top: 1px solid var(--border);
+}
+.meta-row {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+.meta-key {
+  color: var(--warning);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.meta-val {
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .error-header {
   display: flex;
   align-items: center;
