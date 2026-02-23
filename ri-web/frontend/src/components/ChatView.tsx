@@ -47,7 +47,7 @@ export default function ChatView(props: ChatViewProps) {
 
   // Per-session settings, seeded from last successful message or server defaults.
   const [model, setModel] = createSignal<string>('');
-  const [thinking, setThinking] = createSignal<ThinkingLevel>('medium');
+  const [thinking, setThinking] = createSignal<ThinkingLevel | null>(null);
   const [models, setModels] = createSignal<ModelInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [defaultsLoaded, setDefaultsLoaded] = createSignal(false);
@@ -73,15 +73,16 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   // Load available models and server defaults once.
+  const [serverThinking, setServerThinking] = createSignal<ThinkingLevel>('medium');
   onMount(() => {
     getModels().then(setModels).catch(() => {});
     getSettings().then(s => {
+      if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
+        setServerThinking(s.default_thinking as ThinkingLevel);
+      }
       // Only apply server defaults if session history hasn't already set them.
       if (!defaultsLoaded()) {
         if (model() == '') setModel(s.default_model);
-        if (THINKING_LEVELS.includes(s.default_thinking as ThinkingLevel)) {
-          setThinking(s.default_thinking as ThinkingLevel);
-        }
       }
     }).catch(() => {});
   });
@@ -191,7 +192,7 @@ export default function ChatView(props: ChatViewProps) {
 
     setSending(true);
     try {
-      await sendMessage(props.sessionId, text, model() || undefined, thinking());
+      await sendMessage(props.sessionId, text, model() || undefined, thinking() || undefined);
       setMessageText('');
       if (textareaEl) textareaEl.style.height = 'auto';
       refetch();
@@ -207,8 +208,12 @@ export default function ChatView(props: ChatViewProps) {
     catch (err) { console.error('Cancel failed:', err); }
   };
 
+  // Effective thinking: user/history override, or server default.
+  const effectiveThinking = () => thinking() ?? serverThinking();
+
   const cycleThinking = () => {
-    const idx = THINKING_LEVELS.indexOf(thinking());
+    const current = effectiveThinking();
+    const idx = THINKING_LEVELS.indexOf(current);
     const next = THINKING_LEVELS[(idx + 1) % THINKING_LEVELS.length];
     setThinking(next);
   };
@@ -305,9 +310,9 @@ export default function ChatView(props: ChatViewProps) {
                 <label class="settings-label">Thinking</label>
                 <button
                   type="button"
-                  class={`thinking-btn thinking-${thinking()}`}
+                  class={`thinking-btn thinking-${effectiveThinking()}`}
                   onclick={cycleThinking}
-                >{thinking()}</button>
+                >{effectiveThinking()}</button>
               </div>
             </div>
           </Show>
@@ -340,7 +345,7 @@ export default function ChatView(props: ChatViewProps) {
       <div class="chat-footer">
         <span>{session()?.cwd || ''}</span>
         <span class="footer-model">{modelDisplay()}</span>
-        <span class="footer-thinking">{thinking()}</span>
+        <span class="footer-thinking">{effectiveThinking()}</span>
         <Show when={usage() && contextWindow()}>
           <span>{fmtTokens(usage()!.input_tokens)}/{fmtTokens(contextWindow())} ctx</span>
           <Show when={usage()!.cache_read_tokens > 0}>
