@@ -305,12 +305,18 @@ function CompactToolCall(props: {
                 );
               }
 
-              if (props.name === 'read' && details && typeof details.content === 'string') {
+              if (props.name === 'read' && details && typeof details.total_lines === 'number') {
                 const lang = langFromPath(details.path || '');
+                const off = details.offset ?? 1;
+                const lim = details.limit ?? details.total_lines;
+                const end = Math.min(off + lim - 1, details.total_lines);
+                const rangeLabel = (off === 1 && end >= details.total_lines)
+                  ? `${details.total_lines} lines`
+                  : `lines ${off}-${end} of ${details.total_lines}`;
                 return (
                   <div class="read-result">
-                    <div class="file-meta">{details.total_lines} lines</div>
-                    <div class="file-content" innerHTML={highlight(details.content, lang)} />
+                    <div class="file-meta">{rangeLabel}</div>
+                    <div class="file-content" innerHTML={highlight(text, lang)} />
                   </div>
                 );
               }
