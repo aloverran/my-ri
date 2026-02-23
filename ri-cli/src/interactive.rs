@@ -637,7 +637,6 @@ async fn read_input(tui: &mut Tui, events: &mut EventStream) -> io::Result<Input
 pub async fn run(
     mut provider: Box<dyn LlmProvider>,
     model: Model,
-    system_prompt: String,
     tools: Vec<Box<dyn Tool>>,
     cwd: PathBuf,
     initial_prompt: Option<String>,
@@ -645,6 +644,10 @@ pub async fn run(
     mut seen_agents: std::collections::HashSet<PathBuf>,
 ) -> eyre::Result<()> {
     let session_name = session_name_from_prompt(initial_prompt.as_deref());
+    let system_prompt = {
+        let context_files = ri_tools::resources::discover_context_files(&cwd);
+        ri_tools::resources::build_system_prompt(&context_files)
+    };
     let (mut store, mut message_ids) = SessionStore::init(&session_name, &cwd, &system_prompt)?;
 
     let mut tui = Tui::new(model.name.clone())?;
@@ -658,7 +661,6 @@ pub async fn run(
             &mut tui,
             provider.as_ref(),
             &model,
-            &system_prompt,
             &tools,
             &mut store,
             &mut message_ids,
@@ -703,7 +705,6 @@ pub async fn run(
                     &mut tui,
                     provider.as_ref(),
                     &model,
-                    &system_prompt,
                     &tools,
                     &mut store,
                     &mut message_ids,
@@ -731,7 +732,6 @@ async fn run_prompt(
     tui: &mut Tui,
     provider: &dyn LlmProvider,
     model: &Model,
-    system_prompt: &str,
     tools: &[Box<dyn Tool>],
     store: &mut SessionStore,
     message_ids: &mut Vec<String>,
@@ -750,7 +750,7 @@ async fn run_prompt(
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let agent_stream = agent::submit(
-        text, provider, model, system_prompt, tools, store, message_ids, cwd, thinking,
+        text, provider, model, tools, store, message_ids, cwd, thinking,
         seen_agents, cancel.clone(),
     )?;
     tokio::pin!(agent_stream);

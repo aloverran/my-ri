@@ -1,0 +1,592 @@
+//! Meta-tools for orchestrating ri from within an agent loop.
+//!
+//! Three tools that let an LLM agent control ri itself:
+//! - `runAgent`: spawn a sub-agent loop asynchronously
+//! - `readSession`: read a session's message history
+//! - `readMessage`: inspect a single message with provenance
+//!
+//! In the CLI, these tools own all the state they need (sessions_dir)
+//! and create fresh SessionStores when reading. runAgent spawns a fully
+//! self-contained background task.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
+
+use ri::{
+    ContentBlock, LlmProvider, Message, Model, Provenance,
+    RequestOptions, Role, SessionStore,
+    ThinkingLevel, Tool, ToolOutput, ToolSchema,
+};
+use ri_ai::Turn;
+
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
+/// Build the meta-tools for the CLI. Only needs the sessions directory.
+pub fn create(sessions_dir: PathBuf) -> Vec<Box<dyn Tool>> {
+    vec![
+        Box::new(RunAgentTool { sessions_dir: sessions_dir.clone() }),
+        Box::new(ReadSessionTool { sessions_dir: sessions_dir.clone() }),
+        Box::new(ReadMessageTool { sessions_dir }),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// runAgent
+// ---------------------------------------------------------------------------
+
+struct RunAgentTool {
+    sessions_dir: PathBuf,
+}
+
+#[async_trait]
+impl Tool for RunAgentTool {
+    fn name(&self) -> &str { "runAgent" }
+
+    fn description(&self) -> &str {
+        "Run an LLM agent loop asynchronously. The agent resolves messages, \
+         calls the model, executes tool calls, and repeats until the model \
+         stops. All resulting messages are written to the store and the \
+         session is updated. Returns immediately with the session ID."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "message_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Message IDs forming the prompt history."
+                },
+                "user_prompt": {
+                    "type": "string",
+                    "description": "Text to append as a user message before starting."
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session to update. Omit to create a new one."
+                },
+                "model_id": {
+                    "type": "string",
+                    "description": "Model identifier (e.g. 'claude-sonnet-4-20250514')."
+                },
+                "model_params": {
+                    "type": "object",
+                    "properties": {
+                        "thinking": { "type": "string", "description": "Thinking level: off, low, medium, high, xhigh" },
+                        "max_tokens": { "type": "integer", "description": "Maximum output tokens." }
+                    }
+                }
+            },
+            "required": ["message_ids", "model_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+        // -- Parse inputs --
+
+        let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
+            Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            None => return err("missing 'message_ids' parameter"),
+        };
+
+        let model_id = match input.get("model_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'model_id' parameter"),
+        };
+
+        let user_prompt = input.get("user_prompt").and_then(|v| v.as_str()).map(String::from);
+        let session_id = input.get("session_id").and_then(|v| v.as_str()).map(String::from);
+
+        let settings = ri_tools::resources::load_settings();
+        let params = input.get("model_params");
+        let thinking = params
+            .and_then(|p| p.get("thinking"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_thinking)
+            .or_else(|| settings.default_thinking.as_deref().and_then(parse_thinking))
+            .unwrap_or(ThinkingLevel::Medium);
+        let max_tokens = params
+            .and_then(|p| p.get("max_tokens"))
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .map(|n| n as usize);
+
+        // -- Resolve model --
+
+        let (provider, model) = match ri_ai::registry::resolve(&model_id).await {
+            Ok(r) => r,
+            Err(e) => return err(&format!("model resolution failed: {}", e)),
+        };
+
+        // -- Create session --
+
+        let sessions_dir = self.sessions_dir.clone();
+        let mut store = SessionStore::new(sessions_dir.clone());
+        if let Err(e) = store.load_all() {
+            return err(&format!("failed to load sessions: {}", e));
+        }
+
+        let name = session_id.unwrap_or_else(|| ri::gen_id());
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let session_path = match store.new_session(&name, &cwd_str) {
+            Ok(p) => p,
+            Err(e) => return err(&format!("failed to create session: {}", e)),
+        };
+        let file_id = session_path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Persist initial_ids in the header for later readSession.
+        let mut msg_ids = message_ids;
+        if !msg_ids.is_empty() {
+            if let Err(e) = rewrite_header_with_initial_ids(&session_path, &msg_ids) {
+                return err(&format!("failed to write initial_ids: {}", e));
+            }
+        }
+
+        // -- Optionally write user prompt --
+
+        if let Some(text) = &user_prompt {
+            let user_id = store.next_id();
+            let user_msg = Message::new(
+                user_id.clone(), Role::User, vec![ContentBlock::text(text)],
+            );
+            if let Err(e) = store.write_message(user_msg) {
+                return err(&format!("failed to write user message: {}", e));
+            }
+            msg_ids.push(user_id);
+        }
+
+        // -- Spawn background agent loop --
+
+        let cwd_clone = cwd.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_background_loop(
+                provider, model, store, msg_ids, cwd_clone, thinking, max_tokens,
+            ).await {
+                tracing::error!("background agent loop failed: {}", e);
+            }
+        });
+
+        ToolOutput {
+            text: format!("Agent loop started on session '{}'", file_id),
+            is_error: false,
+            details: Some(json!({ "session_id": file_id })),
+        }
+    }
+}
+
+/// Self-contained agent loop that owns all its data. Runs in a background task.
+///
+/// Mirrors the logic in agent.rs but with owned values instead of borrows,
+/// allowing it to run as a detached tokio task. The system prompt is
+/// extracted from the first System-role message in the history.
+async fn run_background_loop(
+    provider: Box<dyn LlmProvider>,
+    model: Model,
+    mut store: SessionStore,
+    mut message_ids: Vec<String>,
+    cwd: PathBuf,
+    thinking: ThinkingLevel,
+    max_tokens: Option<usize>,
+) -> eyre::Result<()> {
+    // Extract system prompt from the first System message.
+    let system_prompt = store.pool.resolve_existing(&message_ids).iter()
+        .find(|m| m.role == Role::System)
+        .and_then(|m| m.content.iter().find_map(|b| {
+            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+        }))
+        .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string());
+
+    let tools = ri_tools::all_tools();
+    let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
+    let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
+        .map(|t| (t.name(), t.as_ref() as &dyn Tool))
+        .collect();
+
+    let cancel = CancellationToken::new();
+
+    loop {
+        let input_ids: Vec<String> = message_ids.clone();
+        let messages: Vec<Message> = store.pool.resolve_existing(&input_ids)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        let opts = RequestOptions {
+            model: model.clone(),
+            system_prompt: system_prompt.clone(),
+            messages,
+            tools: tool_schemas.clone(),
+            thinking,
+            max_tokens,
+        };
+
+        let mut turn = match Turn::start(provider.as_ref(), opts).await {
+            Ok(t) => t,
+            Err(e) => {
+                // Persist error as assistant message.
+                let assistant_id = store.next_id();
+                let msg = Message {
+                    id: assistant_id.clone(),
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::error(e.to_string())],
+                    provenance: Some(Provenance {
+                        input: input_ids,
+                        model: model.id.clone(),
+                        ts: chrono::Utc::now().to_rfc3339(),
+                        usage: None,
+                    }),
+                    meta: None,
+                };
+                store.write_message(msg)?;
+                message_ids.push(assistant_id);
+                break;
+            }
+        };
+
+        // Drain the stream (no display in background).
+        while let Some(result) = turn.next().await {
+            if let Err(_) = result { break; }
+        }
+        let (content, usage) = turn.finish();
+
+        // Persist assistant message.
+        let assistant_id = store.next_id();
+        let msg = Message {
+            id: assistant_id.clone(),
+            role: Role::Assistant,
+            content: content.clone(),
+            provenance: Some(Provenance {
+                input: input_ids,
+                model: model.id.clone(),
+                ts: chrono::Utc::now().to_rfc3339(),
+                usage,
+            }),
+            meta: None,
+        };
+        store.write_message(msg)?;
+        message_ids.push(assistant_id);
+
+        // Extract and execute tool calls.
+        let calls: Vec<(String, String, Value)> = content.iter().filter_map(|c| {
+            if let ContentBlock::ToolUse { id, name, input, .. } = c {
+                Some((id.clone(), name.clone(), input.clone()))
+            } else {
+                None
+            }
+        }).collect();
+
+        if calls.is_empty() { break; }
+
+        let mut results: Vec<ContentBlock> = Vec::new();
+        for (call_id, call_name, call_input) in &calls {
+            let output = match tool_map.get(call_name.as_str()) {
+                Some(tool) => tool.run(call_input.clone(), cwd.clone(), cancel.clone()).await,
+                None => ToolOutput {
+                    text: format!("Tool '{}' not found", call_name),
+                    is_error: true,
+                    details: None,
+                },
+            };
+            results.push(ContentBlock::tool_result_with_details(
+                call_id, &output.text, output.is_error, output.details,
+            ));
+        }
+
+        let tool_id = store.next_id();
+        let tool_msg = Message::new(tool_id.clone(), Role::User, results);
+        store.write_message(tool_msg)?;
+        message_ids.push(tool_id);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// readSession
+// ---------------------------------------------------------------------------
+
+struct ReadSessionTool {
+    sessions_dir: PathBuf,
+}
+
+#[async_trait]
+impl Tool for ReadSessionTool {
+    fn name(&self) -> &str { "readSession" }
+
+    fn description(&self) -> &str {
+        "Read a session's message history in reverse-chronological order. \
+         Each entry includes the message ID, role, content, and provenance."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session to read."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of messages to return."
+                },
+                "contentLimit": {
+                    "type": "integer",
+                    "description": "Max bytes of each message's content to return."
+                }
+            },
+            "required": ["session_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+        let session_id = match input.get("session_id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => return err("missing 'session_id' parameter"),
+        };
+        let limit = input.get("limit")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .map(|n| n as usize);
+        let content_limit = input.get("contentLimit")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .map(|n| n as usize);
+
+        let path = self.sessions_dir.join(format!("{}.jsonl", session_id));
+        if !path.exists() {
+            return err(&format!("session '{}' not found", session_id));
+        }
+
+        match read_session_messages(&path, &self.sessions_dir) {
+            Ok(mut messages) => {
+                messages.reverse();
+                format_session_output(messages, limit, content_limit)
+            }
+            Err(e) => err(&format!("failed to read session: {}", e)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// readMessage
+// ---------------------------------------------------------------------------
+
+struct ReadMessageTool {
+    sessions_dir: PathBuf,
+}
+
+#[async_trait]
+impl Tool for ReadMessageTool {
+    fn name(&self) -> &str { "readMessage" }
+
+    fn description(&self) -> &str {
+        "Read a single message by ID. Returns the full text, provenance \
+         (input message IDs, model, timestamp, usage), and metadata."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "The message ID to read."
+                }
+            },
+            "required": ["message_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+        let message_id = match input.get("message_id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => return err("missing 'message_id' parameter"),
+        };
+
+        match find_message_on_disk(message_id, &self.sessions_dir) {
+            Some(msg) => {
+                let text = serde_json::to_string_pretty(&msg).unwrap_or_default();
+                ToolOutput {
+                    text,
+                    is_error: false,
+                    details: Some(serde_json::to_value(&msg).unwrap_or_default()),
+                }
+            }
+            None => err(&format!("message '{}' not found", message_id)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn err(msg: &str) -> ToolOutput {
+    ToolOutput { text: msg.to_string(), is_error: true, details: None }
+}
+
+fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
+    match s {
+        "off" => Some(ThinkingLevel::Off),
+        "low" => Some(ThinkingLevel::Low),
+        "medium" => Some(ThinkingLevel::Medium),
+        "high" => Some(ThinkingLevel::High),
+        "xhigh" => Some(ThinkingLevel::XHigh),
+        _ => None,
+    }
+}
+
+/// Rewrite the first line of a session JSONL file to include initial_ids.
+fn rewrite_header_with_initial_ids(path: &std::path::Path, ids: &[String]) -> eyre::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let mut lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let mut header: Value = serde_json::from_str(lines[0])?;
+    header["initial_ids"] = json!(ids);
+    let new_header = serde_json::to_string(&header)?;
+    lines[0] = &new_header;
+    std::fs::write(path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
+/// Read all messages from a session file, resolving initial_ids from the
+/// header by loading the full message pool from disk.
+fn read_session_messages(
+    path: &std::path::Path,
+    sessions_dir: &std::path::Path,
+) -> eyre::Result<Vec<Message>> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut initial_ids: Vec<String> = Vec::new();
+    let mut file_messages: Vec<Message> = Vec::new();
+    let mut first = true;
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+
+        if first {
+            first = false;
+            if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
+                if obj.get("session").is_some() && obj.get("role").is_none() {
+                    // Extract initial_ids from header.
+                    if let Some(arr) = obj.get("initial_ids").and_then(|v| v.as_array()) {
+                        initial_ids = arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                    }
+                    continue;
+                }
+            }
+        }
+
+        if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
+            file_messages.push(msg);
+        }
+    }
+
+    if initial_ids.is_empty() {
+        return Ok(file_messages);
+    }
+
+    // Load the full pool to resolve initial_ids.
+    let mut store = SessionStore::new(sessions_dir.to_path_buf());
+    store.load_all()?;
+    let mut result: Vec<Message> = initial_ids.iter()
+        .filter_map(|id| store.pool.get(id).cloned())
+        .collect();
+    result.extend(file_messages);
+    Ok(result)
+}
+
+fn format_session_output(
+    mut messages: Vec<Message>,
+    limit: Option<usize>,
+    content_limit: Option<usize>,
+) -> ToolOutput {
+    if let Some(n) = limit {
+        messages.truncate(n);
+    }
+    if let Some(max_bytes) = content_limit {
+        for msg in &mut messages {
+            truncate_content_blocks(&mut msg.content, max_bytes);
+        }
+    }
+    let text = serde_json::to_string_pretty(&messages).unwrap_or_default();
+    ToolOutput {
+        text,
+        is_error: false,
+        details: Some(serde_json::to_value(&messages).unwrap_or_default()),
+    }
+}
+
+fn truncate_content_blocks(blocks: &mut Vec<ContentBlock>, max_bytes: usize) {
+    for block in blocks.iter_mut() {
+        match block {
+            ContentBlock::Text { text } => {
+                if text.len() > max_bytes {
+                    let truncated = truncate_str(text, max_bytes);
+                    *text = format!("{}... ({} bytes truncated)", truncated, text.len() - max_bytes);
+                }
+            }
+            ContentBlock::Thinking { thinking, .. } => {
+                if thinking.len() > max_bytes {
+                    let truncated = truncate_str(thinking, max_bytes);
+                    *thinking = format!("{}... ({} bytes truncated)", truncated, thinking.len() - max_bytes);
+                }
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                truncate_content_blocks(content, max_bytes);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> &str {
+    if s.len() <= max { return s; }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Option<Message> {
+    let entries = std::fs::read_dir(sessions_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(file);
+        for line in reader.lines().flatten() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            // Quick check before full parse.
+            if !trimmed.contains(message_id) { continue; }
+            if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
+                if msg.id == message_id {
+                    return Some(msg);
+                }
+            }
+        }
+    }
+    None
+}

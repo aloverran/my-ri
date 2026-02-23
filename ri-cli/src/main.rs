@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 mod agent;
 mod interactive;
+mod meta_tools;
 mod print_mode;
 mod rpc_mode;
 
@@ -57,7 +58,9 @@ async fn main() -> Result<()> {
 
     let (provider, model) = ri_ai::registry::resolve(&model_id).await?;
     let system_prompt = ri_tools::resources::build_system_prompt(&context_files);
-    let tools = ri_tools::all_tools();
+    let sessions_dir = ri::SessionStore::default_dir()?;
+    let mut tools = ri_tools::all_tools();
+    tools.extend(meta_tools::create(sessions_dir));
 
     // Resolve thinking level: CLI flag > settings > default (medium).
     let thinking = resolve_thinking(
@@ -110,7 +113,7 @@ async fn main() -> Result<()> {
             };
 
             let events = agent::submit(
-                &prompt, provider.as_ref(), &model, &system_prompt, &tools,
+                &prompt, provider.as_ref(), &model, &tools,
                 &mut store, &mut message_ids, &cwd_path, thinking, &mut seen_agents, cancel,
             )?;
             tokio::pin!(events);
@@ -120,11 +123,11 @@ async fn main() -> Result<()> {
             println!();
         }
         "rpc" => {
-            rpc_mode::run(provider, model, system_prompt, tools, cwd_path, cli.prompt, thinking).await;
+            rpc_mode::run(provider, model, tools, cwd_path, cli.prompt, thinking).await;
         }
         "interactive" => {
             let seen_agents = HashSet::new();
-            interactive::run(provider, model, system_prompt, tools, cwd_path, cli.prompt, thinking, seen_agents).await?;
+            interactive::run(provider, model, tools, cwd_path, cli.prompt, thinking, seen_agents).await?;
         }
         other => {
             eyre::bail!("Unknown mode '{}'. Expected: interactive, print, json, rpc", other);

@@ -39,7 +39,6 @@ pub fn submit<'a>(
     text: &str,
     provider: &'a dyn LlmProvider,
     model: &'a Model,
-    system_prompt: &'a str,
     tools: &'a [Box<dyn Tool>],
     store: &'a mut SessionStore,
     message_ids: &'a mut Vec<String>,
@@ -53,18 +52,20 @@ pub fn submit<'a>(
     store.write_message(user_msg)?;
     message_ids.push(user_id);
 
-    Ok(run(provider, model, system_prompt, tools, store, message_ids, cwd, thinking, None, seen_agents, cancel))
+    Ok(run(provider, model, tools, store, message_ids, cwd, thinking, None, seen_agents, cancel))
 }
 
 /// Run the agent loop: stream LLM response, execute tool calls, persist
 /// everything, repeat until the model stops issuing tool calls.
 ///
+/// The system prompt is extracted from the first System-role message in
+/// the message history. No special string threading needed.
+///
 /// Yields `AgentEvent`s for the caller to observe. Fatal errors stop the
 /// stream after yielding an `AgentEvent::Error`.
-fn run<'a>(
+pub fn run<'a>(
     provider: &'a dyn LlmProvider,
     model: &'a Model,
-    system_prompt: &'a str,
     tools: &'a [Box<dyn Tool>],
     store: &'a mut SessionStore,
     message_ids: &'a mut Vec<String>,
@@ -79,6 +80,9 @@ fn run<'a>(
         let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
             .map(|t| (t.name(), t.as_ref()))
             .collect();
+
+        // Extract system prompt from the first System-role message.
+        let system_prompt = extract_system_prompt(store, message_ids);
 
         loop {
             if cancel.is_cancelled() { break; }
@@ -224,6 +228,17 @@ fn run<'a>(
             yield AgentEvent::MessageComplete(tool_msg);
         }
     }
+}
+
+/// Extract the system prompt text from the first System-role message.
+/// Falls back to the base prompt if none is found.
+fn extract_system_prompt(store: &SessionStore, message_ids: &[String]) -> String {
+    store.pool.resolve_existing(message_ids).iter()
+        .find(|m| m.role == Role::System)
+        .and_then(|m| m.content.iter().find_map(|b| {
+            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+        }))
+        .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string())
 }
 
 /// For file-related tools (Read, Write, Edit), discover any AGENTS.md files

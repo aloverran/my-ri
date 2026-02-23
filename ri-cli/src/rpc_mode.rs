@@ -34,13 +34,16 @@ fn handle_event(evt: &AgentEvent) {
 pub async fn run(
     provider: Box<dyn LlmProvider>,
     model: Model,
-    system_prompt: String,
     tools: Vec<Box<dyn Tool>>,
     cwd: PathBuf,
     initial_prompt: Option<String>,
     thinking: ThinkingLevel,
 ) {
     let mut seen_agents = std::collections::HashSet::new();
+    let system_prompt = {
+        let context_files = ri_tools::resources::discover_context_files(&cwd);
+        ri_tools::resources::build_system_prompt(&context_files)
+    };
     let (mut store, mut message_ids) = match SessionStore::init("rpc", &cwd, &system_prompt) {
         Ok(v) => v,
         Err(e) => {
@@ -52,7 +55,7 @@ pub async fn run(
     if let Some(prompt) = initial_prompt {
         let cancel = tokio_util::sync::CancellationToken::new();
         let events = match agent::submit(
-            &prompt, provider.as_ref(), &model, &system_prompt, &tools,
+            &prompt, provider.as_ref(), &model, &tools,
             &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
         ) {
             Ok(s) => s,
@@ -93,7 +96,7 @@ pub async fn run(
 
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let events = match agent::submit(
-                    message, provider.as_ref(), &model, &system_prompt, &tools,
+                    message, provider.as_ref(), &model, &tools,
                     &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
                 ) {
                     Ok(s) => s,

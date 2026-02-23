@@ -81,17 +81,6 @@ async fn run_agent_loop(
     thinking: ThinkingLevel,
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
-    // Read cwd and tx before any lock-heavy work.
-    let (tx, cwd) = {
-        let lock = session.lock().await;
-        (lock.events_tx.clone(), lock.cwd.clone())
-    };
-
-    // Build system prompt outside any lock (does blocking file I/O).
-    let system_prompt = build_system_prompt(&cwd);
-
-    let thinking_str = thinking_to_str(thinking).to_string();
-
     // Write user message under brief lock, then release.
     {
         let mut lock = session.lock().await;
@@ -99,8 +88,35 @@ async fn run_agent_loop(
         let user_msg = Message::new(user_id.clone(), Role::User, vec![ContentBlock::text(user_text)]);
         lock.store.write_message(user_msg.clone())?;
         lock.message_ids.push(user_id);
-        let _ = tx.send(AgentEvent::MessageComplete(user_msg));
+        let _ = lock.events_tx.send(AgentEvent::MessageComplete(user_msg));
     }
+
+    run_loop(session, provider, model, tools, thinking, None, cancel).await
+}
+
+/// The core agent loop: resolve messages, call the LLM, execute tool calls,
+/// persist everything, repeat until the model stops calling tools.
+///
+/// The system prompt is extracted from the first System-role message in
+/// the session's history. This means the system prompt is just another
+/// message in the store -- no special string threading needed.
+pub(crate) async fn run_loop(
+    session: &Arc<Mutex<SessionState>>,
+    provider: &dyn LlmProvider,
+    model: &Model,
+    tools: &[Arc<dyn Tool>],
+    thinking: ThinkingLevel,
+    max_tokens: Option<usize>,
+    cancel: &CancellationToken,
+) -> eyre::Result<()> {
+    let tx = session.lock().await.events_tx.clone();
+    let thinking_str = thinking_to_str(thinking).to_string();
+
+    // Extract the system prompt from the session's messages once, before looping.
+    let system_prompt = {
+        let lock = session.lock().await;
+        extract_system_prompt(&lock.store.pool.resolve_existing(&lock.message_ids))
+    };
 
     let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
     let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
@@ -123,11 +139,11 @@ async fn run_agent_loop(
 
         let opts = RequestOptions {
             model: model.clone(),
-            system_prompt: system_prompt.clone(),
+            system_prompt: system_prompt.to_string(),
             messages,
             tools: tool_schemas.clone(),
             thinking,
-            max_tokens: None,
+            max_tokens,
         };
 
         // Start the LLM turn.
@@ -271,6 +287,17 @@ async fn run_agent_loop(
 pub fn build_system_prompt(cwd: &std::path::Path) -> String {
     let context_files = ri_tools::resources::discover_context_files(cwd);
     ri_tools::resources::build_system_prompt(&context_files)
+}
+
+/// Extract the system prompt text from the first System-role message.
+/// Falls back to the base prompt if none is found.
+fn extract_system_prompt(messages: &[&Message]) -> String {
+    messages.iter()
+        .find(|m| m.role == Role::System)
+        .and_then(|m| m.content.iter().find_map(|b| {
+            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+        }))
+        .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string())
 }
 
 /// Discover AGENTS.md files near files that tool calls accessed, and inject

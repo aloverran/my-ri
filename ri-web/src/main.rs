@@ -11,6 +11,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 mod agent;
 mod api;
+mod meta_tools;
 mod state;
 
 use state::AppState;
@@ -56,19 +57,26 @@ async fn main() -> Result<()> {
         settings.default_thinking.as_deref(),
     );
 
-    let tools: Vec<Arc<dyn ri::Tool>> = ri_tools::all_tools()
+    let base_tools: Vec<Arc<dyn ri::Tool>> = ri_tools::all_tools()
         .into_iter()
         .map(|t| Arc::from(t))
         .collect();
 
     let sessions_dir = ri::SessionStore::default_dir()?;
 
-    let app_state = Arc::new(AppState {
-        tools,
-        default_model,
-        default_thinking,
-        sessions_dir,
-        sessions: RwLock::new(std::collections::HashMap::new()),
+    let app_state = Arc::new_cyclic(|weak| {
+        let meta = meta_tools::create(weak.clone());
+        let all_tools: Vec<Arc<dyn ri::Tool>> = base_tools.iter().cloned()
+            .chain(meta)
+            .collect();
+        AppState {
+            tools: all_tools,
+            base_tools: base_tools.clone(),
+            default_model: default_model.clone(),
+            default_thinking,
+            sessions_dir: sessions_dir.clone(),
+            sessions: RwLock::new(std::collections::HashMap::new()),
+        }
     });
 
     // Build the API router.

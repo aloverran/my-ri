@@ -10,7 +10,11 @@ use crate::agent::AgentEvent;
 
 /// Top-level server state, shared across all handlers via Arc.
 pub struct AppState {
+    /// All tools available to the primary agent (base + meta).
     pub tools: Vec<Arc<dyn ri::Tool>>,
+    /// Base tools only (bash, read, write, edit) -- given to sub-agents
+    /// spawned by the runAgent meta-tool.
+    pub base_tools: Vec<Arc<dyn ri::Tool>>,
     /// Global defaults (from CLI flags / settings.json). Used when a session
     /// has no history to pull from.
     pub default_model: String,
