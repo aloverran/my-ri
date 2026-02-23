@@ -90,72 +90,32 @@ export interface SSEHandlers {
   error?: (error: Event) => void;
 }
 
-// SSE connection
+// SSE connection.
+// Wires each SSEHandlers key to an EventSource listener. Signal events
+// (no payload) call the handler directly; data events JSON.parse the
+// payload first. Adding a new event type only requires adding a key to
+// SSEHandlers -- the wiring loop picks it up automatically.
 export function connectSSE(sessionId: string, handlers: SSEHandlers): EventSource {
   const eventSource = new EventSource(apiUrl(`/sessions/${sessionId}/events`));
 
-  eventSource.addEventListener('text_start', () => {
-    handlers.text_start?.();
-  });
+  // Signal events carry no data. All other handler keys (except 'error')
+  // carry a JSON payload that gets parsed and forwarded.
+  const signals = new Set(['text_start', 'text_end', 'thinking_start', 'thinking_end', 'done', 'resync']);
 
-  eventSource.addEventListener('text_delta', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.text_delta?.(data);
-  });
+  for (const [name, handler] of Object.entries(handlers)) {
+    if (name === 'error' || !handler) continue;
+    // Cast: Object.entries loses per-key type correlation. Type safety is
+    // enforced at the SSEHandlers interface; this loop is just plumbing.
+    const fn = handler as (...args: unknown[]) => void;
+    if (signals.has(name)) {
+      eventSource.addEventListener(name, () => fn());
+    } else {
+      eventSource.addEventListener(name, (e) =>
+        fn(JSON.parse((e as MessageEvent).data))
+      );
+    }
+  }
 
-  eventSource.addEventListener('text_end', () => {
-    handlers.text_end?.();
-  });
-
-  eventSource.addEventListener('thinking_start', () => {
-    handlers.thinking_start?.();
-  });
-
-  eventSource.addEventListener('thinking_delta', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.thinking_delta?.(data);
-  });
-
-  eventSource.addEventListener('thinking_end', () => {
-    handlers.thinking_end?.();
-  });
-
-  eventSource.addEventListener('tool_start', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.tool_start?.(data);
-  });
-
-  eventSource.addEventListener('tool_end', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.tool_end?.(data);
-  });
-
-  eventSource.addEventListener('message_complete', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.message_complete?.(data);
-  });
-
-  eventSource.addEventListener('usage', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.usage?.(data);
-  });
-
-  eventSource.addEventListener('done', () => {
-    handlers.done?.();
-  });
-
-  eventSource.addEventListener('agent_error', (event) => {
-    const data = JSON.parse(event.data);
-    handlers.agent_error?.(data);
-  });
-
-  eventSource.addEventListener('resync', () => {
-    handlers.resync?.();
-  });
-
-  eventSource.onerror = (error) => {
-    handlers.error?.(error);
-  };
-
+  if (handlers.error) eventSource.onerror = handlers.error;
   return eventSource;
 }
