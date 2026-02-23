@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
             default_thinking,
             sessions_dir: sessions_dir.clone(),
             sessions: RwLock::new(std::collections::HashMap::new()),
+            logins: RwLock::new(std::collections::HashMap::new()),
         }
     });
 

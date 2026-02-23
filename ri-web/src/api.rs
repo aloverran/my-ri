@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use ri::{Message, SessionStore, SessionHeader};
 
 use crate::agent::{self, AgentEvent};
-use crate::state::{AppState, RunHandle, SessionState};
+use crate::state::{AppState, LoginInProgress, LoginStatus, RunHandle, SessionState};
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -28,6 +28,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sessions/{id}/cancel", post(cancel_session))
         .route("/models", get(list_models))
         .route("/settings", get(get_settings))
+        .route("/auth/status", get(auth_status))
+        .route("/auth/login", post(auth_login))
+        .route("/auth/complete", post(auth_complete))
+        .route("/auth/login-status/{provider_id}", get(auth_login_status))
         .with_state(state)
 }
 
@@ -351,6 +355,240 @@ fn parse_thinking(raw: &str) -> Option<ri::ThinkingLevel> {
         "xhigh" => Some(ri::ThinkingLevel::XHigh),
         _ => None,
     }
+}
+
+// -- Auth --
+//
+// OAuth login flow for LLM providers. Two patterns:
+//   PasteCode (Anthropic): user visits URL, copies code, POSTs it to /auth/complete.
+//   LocalCallback (Gemini): backend starts temp server on callback port, browser
+//     redirects there automatically. Frontend polls /auth/login-status until done.
+
+#[derive(Serialize)]
+struct ProviderAuthInfo {
+    id: String,
+    name: String,
+    authenticated: bool,
+}
+
+/// Which providers exist and whether they have stored credentials.
+async fn auth_status() -> Json<Vec<ProviderAuthInfo>> {
+    let providers = ri_ai::registry::all_providers();
+    let info: Vec<ProviderAuthInfo> = providers.into_iter().map(|p| {
+        ProviderAuthInfo {
+            id: p.id().to_string(),
+            name: p.name().to_string(),
+            authenticated: p.is_authenticated(),
+        }
+    }).collect();
+    Json(info)
+}
+
+#[derive(Deserialize)]
+struct AuthLoginRequest {
+    provider_id: String,
+}
+
+#[derive(Serialize)]
+struct AuthLoginResponse {
+    /// "paste_code" or "local_callback"
+    method: String,
+    url: String,
+}
+
+/// Begin an OAuth login flow for a provider. Creates the provider instance,
+/// calls begin_login, and stores the instance for the complete step.
+/// For LocalCallback, also spawns a background task that starts the callback
+/// server and auto-completes when the browser redirects.
+async fn auth_login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AuthLoginRequest>,
+) -> Result<Json<AuthLoginResponse>, AppError> {
+    // Clean up any previous login for this provider.
+    state.logins.write().await.remove(&req.provider_id);
+
+    // Find the matching provider factory.
+    let provider = ri_ai::registry::all_providers()
+        .into_iter()
+        .find(|p| p.id() == req.provider_id)
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown provider: {}", req.provider_id)))?;
+
+    let auth_method = provider.begin_login().await
+        .map_err(|e| AppError::Internal(format!("begin_login failed: {}", e)))?
+        .ok_or_else(|| AppError::BadRequest("Provider does not support login".into()))?;
+
+    let status = std::sync::Arc::new(Mutex::new(LoginStatus::AwaitingCode));
+
+    let (method, url) = match &auth_method {
+        ri::AuthMethod::PasteCode { url } => {
+            ("paste_code".to_string(), url.clone())
+        }
+        ri::AuthMethod::LocalCallback { url, port, path } => {
+            *status.lock().await = LoginStatus::AwaitingCallback;
+            let callback_url = url.clone();
+            let port = *port;
+            let path = path.clone();
+
+            // Spawn background task: start callback server, wait for code, complete login.
+            let bg_status = status.clone();
+            let provider_id = req.provider_id.clone();
+            let bg_state = state.clone();
+            tokio::spawn(async move {
+                let result = run_local_callback(
+                    &bg_state, &provider_id, port, &path,
+                ).await;
+                match result {
+                    Ok(()) => {
+                        *bg_status.lock().await = LoginStatus::Complete;
+                    }
+                    Err(e) => {
+                        *bg_status.lock().await = LoginStatus::Failed(e.to_string());
+                    }
+                }
+            });
+
+            ("local_callback".to_string(), callback_url)
+        }
+    };
+
+    let login = LoginInProgress {
+        provider: Mutex::new(provider),
+        status,
+    };
+    state.logins.write().await.insert(req.provider_id, login);
+
+    Ok(Json(AuthLoginResponse { method, url }))
+}
+
+/// Start a temporary HTTP server on the callback port, wait for the OAuth
+/// redirect, then call complete_login on the stored provider instance.
+async fn run_local_callback(
+    state: &Arc<AppState>,
+    provider_id: &str,
+    port: u16,
+    expected_path: &str,
+) -> eyre::Result<()> {
+    use axum::{extract::Query, response::Html, routing::get as get_route, Router as CallbackRouter};
+    use std::collections::HashMap as StdHashMap;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let tx = std::sync::Arc::new(Mutex::new(Some(tx)));
+
+    let handler = {
+        let tx = tx.clone();
+        move |Query(params): Query<StdHashMap<String, String>>| {
+            let tx = tx.clone();
+            async move {
+                let mut guard = tx.lock().await;
+                if let Some(tx) = guard.take() {
+                    if let Some(error) = params.get("error") {
+                        let _ = tx.send(Err(error.clone()));
+                        return Html("<h1>Authorization failed</h1><p>You can close this window.</p>".to_string());
+                    }
+                    if let Some(code) = params.get("code") {
+                        let _ = tx.send(Ok(code.clone()));
+                        return Html("<h1>Login successful</h1><p>You can close this window and return to ri.</p>".to_string());
+                    }
+                    let _ = tx.send(Err("No authorization code in callback".into()));
+                }
+                Html("<h1>Unexpected request</h1>".to_string())
+            }
+        }
+    };
+
+    let app = CallbackRouter::new().route(expected_path, get_route(handler));
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
+        .await
+        .map_err(|e| eyre::eyre!("Failed to bind callback on port {}: {}", port, e))?;
+
+    let code = tokio::select! {
+        result = axum::serve(listener, app) => {
+            result.map_err(|e| eyre::eyre!("Callback server error: {}", e))?;
+            return Err(eyre::eyre!("Callback server stopped unexpectedly"));
+        }
+        result = rx => {
+            result
+                .map_err(|_| eyre::eyre!("Callback channel closed"))?
+                .map_err(|e| eyre::eyre!("OAuth error: {}", e))?
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+            return Err(eyre::eyre!("OAuth callback timed out after 5 minutes"));
+        }
+    };
+
+    // Complete login on the stored provider instance.
+    let logins = state.logins.read().await;
+    let login = logins.get(provider_id)
+        .ok_or_else(|| eyre::eyre!("Login state disappeared"))?;
+    let provider = login.provider.lock().await;
+    provider.complete_login(&code).await?;
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct AuthCompleteRequest {
+    provider_id: String,
+    code: String,
+}
+
+/// Complete a PasteCode login flow with the code the user copied from the
+/// provider's callback page.
+async fn auth_complete(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AuthCompleteRequest>,
+) -> Result<StatusCode, AppError> {
+    let logins = state.logins.read().await;
+    let login = logins.get(&req.provider_id)
+        .ok_or_else(|| AppError::BadRequest("No login in progress for this provider".into()))?;
+
+    let provider = login.provider.lock().await;
+    provider.complete_login(&req.code).await
+        .map_err(|e| AppError::Internal(format!("complete_login failed: {}", e)))?;
+
+    *login.status.lock().await = LoginStatus::Complete;
+    drop(provider);
+    drop(logins);
+
+    // Clean up -- login is done.
+    state.logins.write().await.remove(&req.provider_id);
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(Serialize)]
+struct AuthLoginStatusResponse {
+    status: String,
+    error: Option<String>,
+}
+
+/// Poll the status of a LocalCallback login flow.
+async fn auth_login_status(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+) -> Result<Json<AuthLoginStatusResponse>, AppError> {
+    let logins = state.logins.read().await;
+    let login = logins.get(&provider_id)
+        .ok_or_else(|| AppError::NotFound("No login in progress".into()))?;
+
+    let status = login.status.lock().await.clone();
+    let (status_str, error) = match &status {
+        LoginStatus::AwaitingCode => ("awaiting_code", None),
+        LoginStatus::AwaitingCallback => ("awaiting_callback", None),
+        LoginStatus::Complete => ("complete", None),
+        LoginStatus::Failed(e) => ("failed", Some(e.clone())),
+    };
+
+    // Clean up completed/failed flows.
+    drop(logins);
+    if matches!(status, LoginStatus::Complete | LoginStatus::Failed(_)) {
+        state.logins.write().await.remove(&provider_id);
+    }
+
+    Ok(Json(AuthLoginStatusResponse {
+        status: status_str.to_string(),
+        error,
+    }))
 }
 
 // -- SSE stream conversion --

@@ -21,6 +21,30 @@ pub struct AppState {
     pub default_thinking: ri::ThinkingLevel,
     pub sessions_dir: PathBuf,
     pub sessions: RwLock<HashMap<String, Arc<Mutex<SessionState>>>>,
+    /// In-progress OAuth login flows, keyed by provider id.
+    /// Holds the provider instance (which stores the PKCE verifier internally)
+    /// and tracks whether the flow has completed.
+    pub logins: RwLock<HashMap<String, LoginInProgress>>,
+}
+
+/// An OAuth login flow in progress. The provider instance must be kept alive
+/// between begin_login() and complete_login() because it holds the PKCE
+/// verifier in its internal state.
+pub struct LoginInProgress {
+    pub provider: Mutex<Box<dyn ri::LlmProvider>>,
+    pub status: Arc<Mutex<LoginStatus>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LoginStatus {
+    /// PasteCode flow: waiting for user to paste the auth code.
+    AwaitingCode,
+    /// LocalCallback flow: temp server running, waiting for browser redirect.
+    AwaitingCallback,
+    /// Login completed successfully.
+    Complete,
+    /// Login failed with an error message.
+    Failed(String),
 }
 
 /// Per-session state. Behind Arc<Mutex<>> in the sessions map.

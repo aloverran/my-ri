@@ -1,6 +1,7 @@
 import { createSignal, createResource, For, Show } from 'solid-js';
 import { getSessions, createSession } from '../api';
 import { SessionSummary } from '../types';
+import SettingsPanel from './SettingsPanel';
 
 interface SessionListProps {
   onSelect: (id: string) => void;
@@ -23,6 +24,7 @@ export default function SessionList(props: SessionListProps) {
   const [name, setName] = createSignal('');
   const [cwd, setCwd] = createSignal('/Users/john/Projects/ri');
   const [creating, setCreating] = createSignal(false);
+  const [showSettings, setShowSettings] = createSignal(false);
 
   const handleCreate = async (e: Event) => {
     e.preventDefault();
@@ -47,7 +49,17 @@ export default function SessionList(props: SessionListProps) {
     <div class="session-list">
       <div class="session-list-header">
         <h1>ri</h1>
+        <button
+          class="session-list-settings-btn"
+          onclick={() => setShowSettings(!showSettings())}
+          title="Settings"
+        >{'\u2699'}</button>
       </div>
+
+      {/* Global settings panel (auth, etc) */}
+      <Show when={showSettings()}>
+        <SettingsPanel onClose={() => setShowSettings(false)} />
+      </Show>
 
       <form class="new-session-form" onSubmit={handleCreate}>
         <input

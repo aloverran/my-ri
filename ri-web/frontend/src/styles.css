@@ -106,6 +106,132 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-size: 14px;
   font-weight: 500;
 }
+.session-list-settings-btn {
+  margin-left: auto;
+  font-size: 16px;
+  padding: 2px 6px;
+  height: 24px;
+  width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+.session-list-settings-btn:hover:not(:disabled) { border-color: var(--text-2); color: var(--text-1); }
+
+/* ========================
+   Settings Panel (global)
+   ======================== */
+.settings-panel {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-panel-title {
+  font-size: var(--size-sm);
+  font-weight: 500;
+  flex: 1;
+}
+.settings-panel-close {
+  font-size: 16px;
+  padding: 0 4px;
+  height: 20px;
+  width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  color: var(--text-2);
+  border: none;
+}
+.settings-panel-close:hover { color: var(--text-0); }
+
+.settings-section {
+  padding: 6px 12px 8px;
+}
+.settings-section-label {
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+/* Provider auth rows */
+.provider-row {
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.provider-row:last-child { border-bottom: none; }
+.provider-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.provider-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.provider-dot.auth-ok { background: var(--success); }
+.provider-dot.auth-none { background: var(--text-2); }
+.provider-name {
+  font-size: var(--size-sm);
+  font-weight: 500;
+}
+.provider-id {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  flex: 1;
+}
+.provider-login-btn {
+  font-size: var(--size-xs);
+  padding: 2px 8px;
+  height: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  flex-shrink: 0;
+}
+.provider-login-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-0); }
+.provider-status {
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.provider-status.waiting { color: var(--warning); }
+.provider-status.ok { color: var(--success); }
+
+/* Paste code input (Anthropic) */
+.paste-code-form {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0 2px 13px;
+}
+.paste-code-input {
+  flex: 1;
+  height: 22px;
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+}
+
+/* Provider error */
+.provider-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 2px 13px;
+  font-size: var(--size-xs);
+}
 
 .new-session-form {
   display: flex;

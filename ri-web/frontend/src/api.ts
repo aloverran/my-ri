@@ -72,6 +72,40 @@ export function getSettings(): Promise<SettingsData> {
   return apiRequest<SettingsData>('GET', '/settings');
 }
 
+// Auth -- OAuth login for LLM providers.
+
+export interface ProviderAuthInfo {
+  id: string;
+  name: string;
+  authenticated: boolean;
+}
+
+export function getAuthStatus(): Promise<ProviderAuthInfo[]> {
+  return apiRequest<ProviderAuthInfo[]>('GET', '/auth/status');
+}
+
+export interface AuthLoginResponse {
+  method: 'paste_code' | 'local_callback';
+  url: string;
+}
+
+export function beginLogin(providerId: string): Promise<AuthLoginResponse> {
+  return apiRequest<AuthLoginResponse>('POST', '/auth/login', { provider_id: providerId });
+}
+
+export function completeLogin(providerId: string, code: string): Promise<void> {
+  return apiRequest<void>('POST', '/auth/complete', { provider_id: providerId, code });
+}
+
+export interface AuthLoginStatusResponse {
+  status: 'awaiting_code' | 'awaiting_callback' | 'complete' | 'failed';
+  error: string | null;
+}
+
+export function getLoginStatus(providerId: string): Promise<AuthLoginStatusResponse> {
+  return apiRequest<AuthLoginStatusResponse>('GET', `/auth/login-status/${providerId}`);
+}
+
 // SSE handlers interface -- data shapes match the backend's JSON payloads.
 export interface SSEHandlers {
   text_start?: () => void;
