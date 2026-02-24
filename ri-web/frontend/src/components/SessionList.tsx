@@ -52,7 +52,7 @@ export default function SessionList(props: SessionListProps) {
       <div class="session-list-header">
         <h1>ri</h1>
         <button
-          class={`session-list-settings-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
+          class={`log-toggle-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
           onclick={props.onToggleLogs}
           title="Tracing logs"
         >log</button>

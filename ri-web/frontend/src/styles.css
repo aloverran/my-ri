@@ -97,17 +97,18 @@ input:disabled, textarea:disabled { opacity: 0.5; }
 .session-list-header {
   display: flex;
   align-items: center;
+  gap: 6px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
 .session-list-header h1 {
   margin: 0;
+  flex: 1;
   font-size: 14px;
   font-weight: 500;
 }
 .session-list-settings-btn {
-  margin-left: auto;
   font-size: 16px;
   padding: 2px 6px;
   height: 24px;
