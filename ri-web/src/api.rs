@@ -28,6 +28,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/sessions/{id}/cancel", post(cancel_session))
         .route("/models", get(list_models))
         .route("/settings", get(get_settings))
+        .route("/logs", get(log_events))
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(auth_login))
         .route("/auth/complete", post(auth_complete))
@@ -292,6 +293,50 @@ async fn cancel_session(
     Ok(StatusCode::OK)
 }
 
+/// SSE endpoint: stream tracing log entries from the server.
+/// Global (not per-session) -- streams all tracing output.
+///
+/// On connect: subscribes to broadcast first, then snapshots the ring
+/// buffer. This guarantees no events are missed (subscribe catches
+/// anything after this point; snapshot catches everything before).
+/// A few entries at the boundary may appear twice -- harmless for a
+/// debug panel.
+async fn log_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // Subscribe before snapshot so we don't miss events in the gap.
+    let rx = state.log_tx.subscribe();
+    let history = state.log_buffer.snapshot();
+    tracing::info!("log panel connected, replaying {} entries", history.len());
+
+    let stream = async_stream::stream! {
+        // Replay buffered history first.
+        for entry in history {
+            if let Ok(data) = serde_json::to_string(&entry) {
+                yield Ok(Event::default().event("log").data(data));
+            }
+        }
+
+        // Then stream live events from broadcast.
+        let mut rx = rx;
+        loop {
+            match rx.recv().await {
+                Ok(entry) => {
+                    if let Ok(data) = serde_json::to_string(&entry) {
+                        yield Ok(Event::default().event("log").data(data));
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!("log SSE client lagged, missed {} entries", n);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 // -- Models --
 
 #[derive(Serialize)]
@@ -369,6 +414,8 @@ struct ProviderAuthInfo {
     id: String,
     name: String,
     authenticated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
 }
 
 /// Which providers exist and whether they have stored credentials.
@@ -379,6 +426,7 @@ async fn auth_status() -> Json<Vec<ProviderAuthInfo>> {
             id: p.id().to_string(),
             name: p.name().to_string(),
             authenticated: p.is_authenticated(),
+            account: p.account_label(),
         }
     }).collect();
     Json(info)

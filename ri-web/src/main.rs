@@ -8,13 +8,16 @@ use color_eyre::eyre::Result;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
+use tracing_subscriber::prelude::*;
 
 mod agent;
 mod api;
 mod meta_tools;
 mod state;
+mod tracing_broadcast;
 
 use state::AppState;
+use tracing_broadcast::{BroadcastLayer, LogBuffer};
 
 #[derive(Parser)]
 #[command(name = "ri-web", about = "ri web interface")]
@@ -39,8 +42,16 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+
+    // Broadcast channel for live tracing logs -> SSE. Ring buffer keeps
+    // full history since boot (50k cap) so new SSE clients see everything.
+    let (log_tx, _) = tokio::sync::broadcast::channel(1024);
+    let log_buffer = Arc::new(LogBuffer::new(50_000));
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer()
+            .with_filter(tracing_subscriber::EnvFilter::from_default_env()))
+        .with(BroadcastLayer::new(log_tx.clone(), log_buffer.clone()))
         .init();
 
     let cli = Cli::parse();
@@ -77,6 +88,8 @@ async fn main() -> Result<()> {
             sessions_dir: sessions_dir.clone(),
             sessions: RwLock::new(std::collections::HashMap::new()),
             logins: RwLock::new(std::collections::HashMap::new()),
+            log_tx: log_tx.clone(),
+            log_buffer: log_buffer.clone(),
         }
     });
 

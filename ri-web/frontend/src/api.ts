@@ -78,6 +78,7 @@ export interface ProviderAuthInfo {
   id: string;
   name: string;
   authenticated: boolean;
+  account?: string;
 }
 
 export function getAuthStatus(): Promise<ProviderAuthInfo[]> {
@@ -152,4 +153,22 @@ export function connectSSE(sessionId: string, handlers: SSEHandlers): EventSourc
 
   if (handlers.error) eventSource.onerror = handlers.error;
   return eventSource;
+}
+
+// -- Log SSE --
+
+export interface LogEntry {
+  ts: string;
+  level: 'TRACE' | 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  target: string;
+  message: string;
+}
+
+/** Connect to the global tracing log SSE stream. */
+export function connectLogSSE(onEntry: (entry: LogEntry) => void): EventSource {
+  const es = new EventSource(apiUrl('/logs'));
+  es.addEventListener('log', (e) => {
+    onEntry(JSON.parse((e as MessageEvent).data));
+  });
+  return es;
 }

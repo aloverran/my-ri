@@ -191,7 +191,13 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-family: var(--font-mono);
   font-size: var(--size-xs);
   color: var(--text-2);
+}
+.provider-account {
+  font-size: var(--size-xs);
+  color: var(--text-2);
   flex: 1;
+  text-align: right;
+  margin-right: 4px;
 }
 .provider-login-btn {
   font-size: var(--size-xs);
@@ -963,4 +969,178 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   .chat-footer { padding: 2px 8px 3px; }
   .new-session-form { padding: 6px 8px; }
   .session-row { padding: 5px 8px; }
+}
+
+/* ========================
+   App split layout (log panel open)
+   ======================== */
+.app-split {
+  flex-direction: row;
+}
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ========================
+   Log toggle button (header)
+   ======================== */
+.log-toggle-btn {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  padding: 2px 6px;
+  height: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.log-toggle-btn:hover:not(:disabled) { border-color: var(--text-2); color: var(--text-1); }
+.log-toggle-active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* ========================
+   Log Panel
+   ======================== */
+.log-panel {
+  width: 480px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.log-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 34px;
+  min-height: 34px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.log-panel-title {
+  font-size: var(--size-sm);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.log-panel-count {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+.log-level-select {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-0);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1px 4px;
+  height: 22px;
+  outline: none;
+  flex-shrink: 0;
+}
+.log-level-select:focus { border-color: var(--accent); }
+
+.log-search {
+  flex: 1;
+  min-width: 60px;
+  height: 22px;
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  padding: 2px 6px;
+}
+
+.log-panel-btn {
+  font-size: var(--size-sm);
+  padding: 2px 4px;
+  height: 22px;
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  color: var(--text-2);
+  border: none;
+  flex-shrink: 0;
+}
+.log-panel-btn:hover { color: var(--text-0); }
+.log-paused { color: var(--warning); }
+
+/* Log entries area */
+.log-entries {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  line-height: 1.35;
+}
+
+.log-empty {
+  padding: 12px;
+  color: var(--text-2);
+  font-size: var(--size-sm);
+}
+
+.log-truncated {
+  padding: 2px 8px;
+  color: var(--text-2);
+  font-size: var(--size-xs);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+}
+
+.log-line {
+  display: flex;
+  gap: 0;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.log-line:hover { background: var(--bg-hover); }
+
+.log-ts {
+  color: var(--text-2);
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+
+.log-level {
+  flex-shrink: 0;
+  width: 42px;
+  font-weight: 500;
+}
+.log-level.log-trace { color: var(--text-2); }
+.log-level.log-debug { color: var(--text-1); }
+.log-level.log-info  { color: var(--accent); }
+.log-level.log-warn  { color: var(--warning); }
+.log-level.log-error { color: var(--error); }
+
+.log-target {
+  color: var(--text-2);
+  flex-shrink: 0;
+  margin-right: 6px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log-msg {
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

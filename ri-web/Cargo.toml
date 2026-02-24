@@ -21,7 +21,7 @@ eyre = "0.6"
 color-eyre = "0.6"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"

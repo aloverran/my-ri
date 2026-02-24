@@ -155,6 +155,9 @@ function ProviderRow(props: ProviderRowProps) {
         <span class={`provider-dot ${props.provider.authenticated ? 'auth-ok' : 'auth-none'}`} />
         <span class="provider-name">{props.provider.name}</span>
         <span class="provider-id">{props.provider.id}</span>
+        <Show when={props.provider.account}>
+          <span class="provider-account">{props.provider.account}</span>
+        </Show>
 
         <Show when={props.state.phase === 'idle' && !props.provider.authenticated}>
           <button class="provider-login-btn" onclick={props.onLogin}>Login</button>

@@ -11,6 +11,8 @@ type ThinkingLevel = typeof THINKING_LEVELS[number];
 interface ChatViewProps {
   sessionId: string;
   onBack: () => void;
+  logsOpen: boolean;
+  onToggleLogs: () => void;
 }
 
 /// Scan messages in reverse for the last successful assistant message.
@@ -297,6 +299,12 @@ export default function ChatView(props: ChatViewProps) {
           onclick={() => setDisplayMode(m => m === 'compact' ? 'debug' : 'compact')}
           title={`Display: ${displayMode()}`}
         >{displayMode()}</button>
+        {/* Tracing log panel toggle */}
+        <button
+          class={`log-toggle-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
+          onclick={props.onToggleLogs}
+          title="Tracing logs"
+        >log</button>
       </header>
 
       <div class="messages" ref={(el) => {

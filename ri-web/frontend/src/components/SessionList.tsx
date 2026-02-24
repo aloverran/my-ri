@@ -5,6 +5,8 @@ import SettingsPanel from './SettingsPanel';
 
 interface SessionListProps {
   onSelect: (id: string) => void;
+  logsOpen: boolean;
+  onToggleLogs: () => void;
 }
 
 function relativeTime(ts: string): string {
@@ -49,6 +51,11 @@ export default function SessionList(props: SessionListProps) {
     <div class="session-list">
       <div class="session-list-header">
         <h1>ri</h1>
+        <button
+          class={`session-list-settings-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
+          onclick={props.onToggleLogs}
+          title="Tracing logs"
+        >log</button>
         <button
           class="session-list-settings-btn"
           onclick={() => setShowSettings(!showSettings())}

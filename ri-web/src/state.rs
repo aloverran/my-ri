@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::AgentEvent;
+use crate::tracing_broadcast::{LogBuffer, LogEntry};
 
 /// Top-level server state, shared across all handlers via Arc.
 pub struct AppState {
@@ -25,6 +26,11 @@ pub struct AppState {
     /// Holds the provider instance (which stores the PKCE verifier internally)
     /// and tracks whether the flow has completed.
     pub logins: RwLock<HashMap<String, LoginInProgress>>,
+    /// Broadcast channel for live tracing log entries.
+    pub log_tx: broadcast::Sender<LogEntry>,
+    /// Ring buffer of all log entries since boot (capped). Snapshotted
+    /// when a new SSE client connects so it sees full history.
+    pub log_buffer: Arc<LogBuffer>,
 }
 
 /// An OAuth login flow in progress. The provider instance must be kept alive
