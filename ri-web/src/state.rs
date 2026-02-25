@@ -60,6 +60,10 @@ pub struct SessionState {
     pub cwd: PathBuf,
     pub name: String,
     pub ts: String,
+    /// File-stem ID of this session (e.g. "2026-02-24_201128_my-task").
+    pub file_id: String,
+    /// File-stem ID of the parent session, if this session was spawned by another.
+    pub parent: Option<String>,
     /// Broadcast channel for SSE clients to subscribe to agent events.
     pub events_tx: broadcast::Sender<AgentEvent>,
     /// Active agent run handle. None when idle.

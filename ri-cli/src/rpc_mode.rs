@@ -44,19 +44,42 @@ pub async fn run(
         let context_files = ri_tools::resources::discover_context_files(&cwd);
         ri_tools::resources::build_system_prompt(&context_files)
     };
-    let (mut store, mut message_ids) = match SessionStore::init("rpc", &cwd, &system_prompt) {
-        Ok(v) => v,
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let sessions_dir = match SessionStore::default_dir() {
+        Ok(d) => d,
         Err(e) => {
-            output_json(&json!({"type": "error", "message": format!("Failed to init session: {}", e)}));
+            output_json(&json!({"type": "error", "message": format!("Failed to find sessions dir: {}", e)}));
             return;
         }
     };
+    let mut store = SessionStore::new(sessions_dir);
+    if let Err(e) = store.load_all() {
+        output_json(&json!({"type": "error", "message": format!("Failed to load sessions: {}", e)}));
+        return;
+    }
+    let file_id = match store.create_session("rpc", &cwd_str, None, &[]) {
+        Ok(id) => id,
+        Err(e) => {
+            output_json(&json!({"type": "error", "message": format!("Failed to create session: {}", e)}));
+            return;
+        }
+    };
+    let sys_msg = match store.write_message(&file_id,
+        ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            output_json(&json!({"type": "error", "message": format!("Failed to write system message: {}", e)}));
+            return;
+        }
+    };
+    let mut message_ids = vec![sys_msg.id];
 
     if let Some(prompt) = initial_prompt {
         let cancel = tokio_util::sync::CancellationToken::new();
         let events = match agent::submit(
             &prompt, provider.as_ref(), &model, &tools,
-            &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
+            &mut store, &mut message_ids, &cwd, thinking, &file_id, &mut seen_agents, cancel,
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -97,7 +120,7 @@ pub async fn run(
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let events = match agent::submit(
                     message, provider.as_ref(), &model, &tools,
-                    &mut store, &mut message_ids, &cwd, thinking, &mut seen_agents, cancel,
+                    &mut store, &mut message_ids, &cwd, thinking, &file_id, &mut seen_agents, cancel,
                 ) {
                     Ok(s) => s,
                     Err(e) => {

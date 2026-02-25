@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use ri::{
     ContentBlock, LlmProvider, Message, Model, Provenance,
     RequestOptions, Role, SessionStore,
-    ThinkingLevel, Tool, ToolOutput, ToolSchema,
+    ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
 
@@ -92,7 +92,7 @@ impl Tool for RunAgentTool {
         })
     }
 
-    async fn run(&self, input: Value, cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         // -- Parse inputs --
 
         let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
@@ -137,43 +137,32 @@ impl Tool for RunAgentTool {
         }
 
         let name = session_id.unwrap_or_else(|| ri::gen_id());
-        let cwd_str = cwd.to_string_lossy().to_string();
-        let session_path = match store.new_session(&name, &cwd_str) {
-            Ok(p) => p,
+        let cwd_str = ctx.cwd.to_string_lossy().to_string();
+        let parent = ctx.session_id.as_deref();
+        let mut msg_ids = message_ids;
+        let file_id = match store.create_session(&name, &cwd_str, parent, &msg_ids) {
+            Ok(v) => v,
             Err(e) => return err(&format!("failed to create session: {}", e)),
         };
-        let file_id = session_path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        // Persist initial_ids in the header for later readSession.
-        let mut msg_ids = message_ids;
-        if !msg_ids.is_empty() {
-            if let Err(e) = rewrite_header_with_initial_ids(&session_path, &msg_ids) {
-                return err(&format!("failed to write initial_ids: {}", e));
-            }
-        }
 
         // -- Optionally write user prompt --
 
         if let Some(text) = &user_prompt {
-            let user_id = store.next_id();
-            let user_msg = Message::new(
-                user_id.clone(), Role::User, vec![ContentBlock::text(text)],
-            );
-            if let Err(e) = store.write_message(user_msg) {
-                return err(&format!("failed to write user message: {}", e));
+            match store.write_message(&file_id,
+                Role::User, vec![ContentBlock::text(text)], None, None,
+            ) {
+                Ok(msg) => msg_ids.push(msg.id),
+                Err(e) => return err(&format!("failed to write user message: {}", e)),
             }
-            msg_ids.push(user_id);
         }
 
         // -- Spawn background agent loop --
 
-        let cwd_clone = cwd.clone();
+        let cwd_clone = ctx.cwd.clone();
+        let session_id_clone = file_id.clone();
         tokio::spawn(async move {
             if let Err(e) = run_background_loop(
-                provider, model, store, msg_ids, cwd_clone, thinking, max_tokens,
+                provider, model, store, msg_ids, cwd_clone, thinking, max_tokens, session_id_clone,
             ).await {
                 tracing::error!("background agent loop failed: {}", e);
             }
@@ -200,6 +189,7 @@ async fn run_background_loop(
     cwd: PathBuf,
     thinking: ThinkingLevel,
     max_tokens: Option<usize>,
+    session_id: String,
 ) -> eyre::Result<()> {
     // Extract system prompt from the first System message.
     let system_prompt = store.pool.resolve_existing(&message_ids).iter()
@@ -236,22 +226,18 @@ async fn run_background_loop(
         let mut turn = match Turn::start(provider.as_ref(), opts).await {
             Ok(t) => t,
             Err(e) => {
-                // Persist error as assistant message.
-                let assistant_id = store.next_id();
-                let msg = Message {
-                    id: assistant_id.clone(),
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::error(e.to_string())],
-                    provenance: Some(Provenance {
+                let msg = store.write_message(&session_id,
+                    Role::Assistant,
+                    vec![ContentBlock::error(e.to_string())],
+                    Some(Provenance {
                         input: input_ids,
                         model: model.id.clone(),
                         ts: chrono::Utc::now().to_rfc3339(),
                         usage: None,
                     }),
-                    meta: None,
-                };
-                store.write_message(msg)?;
-                message_ids.push(assistant_id);
+                    None,
+                )?;
+                message_ids.push(msg.id);
                 break;
             }
         };
@@ -263,21 +249,18 @@ async fn run_background_loop(
         let (content, usage) = turn.finish();
 
         // Persist assistant message.
-        let assistant_id = store.next_id();
-        let msg = Message {
-            id: assistant_id.clone(),
-            role: Role::Assistant,
-            content: content.clone(),
-            provenance: Some(Provenance {
+        let assistant_msg = store.write_message(&session_id,
+            Role::Assistant,
+            content.clone(),
+            Some(Provenance {
                 input: input_ids,
                 model: model.id.clone(),
                 ts: chrono::Utc::now().to_rfc3339(),
                 usage,
             }),
-            meta: None,
-        };
-        store.write_message(msg)?;
-        message_ids.push(assistant_id);
+            None,
+        )?;
+        message_ids.push(assistant_msg.id);
 
         // Extract and execute tool calls.
         let calls: Vec<(String, String, Value)> = content.iter().filter_map(|c| {
@@ -293,7 +276,11 @@ async fn run_background_loop(
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             let output = match tool_map.get(call_name.as_str()) {
-                Some(tool) => tool.run(call_input.clone(), cwd.clone(), cancel.clone()).await,
+                Some(tool) => {
+                    // Sub-agents only receive base tools (no runAgent), so no session_id needed.
+                    let ctx = ToolContext { cwd: cwd.clone(), session_id: None };
+                    tool.run(call_input.clone(), ctx, cancel.clone()).await
+                },
                 None => ToolOutput {
                     text: format!("Tool '{}' not found", call_name),
                     is_error: true,
@@ -305,10 +292,10 @@ async fn run_background_loop(
             ));
         }
 
-        let tool_id = store.next_id();
-        let tool_msg = Message::new(tool_id.clone(), Role::User, results);
-        store.write_message(tool_msg)?;
-        message_ids.push(tool_id);
+        let tool_msg = store.write_message(&session_id,
+            Role::User, results, None, None,
+        )?;
+        message_ids.push(tool_msg.id);
     }
 
     Ok(())
@@ -354,7 +341,7 @@ impl Tool for ReadSessionTool {
         })
     }
 
-    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, _ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         let session_id = match input.get("session_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => return err("missing 'session_id' parameter"),
@@ -412,7 +399,7 @@ impl Tool for ReadMessageTool {
         })
     }
 
-    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, _ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         let message_id = match input.get("message_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => return err("missing 'message_id' parameter"),
@@ -449,21 +436,6 @@ fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
         "xhigh" => Some(ThinkingLevel::XHigh),
         _ => None,
     }
-}
-
-/// Rewrite the first line of a session JSONL file to include initial_ids.
-fn rewrite_header_with_initial_ids(path: &std::path::Path, ids: &[String]) -> eyre::Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let mut lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
-        return Ok(());
-    }
-    let mut header: Value = serde_json::from_str(lines[0])?;
-    header["initial_ids"] = json!(ids);
-    let new_header = serde_json::to_string(&header)?;
-    lines[0] = &new_header;
-    std::fs::write(path, lines.join("\n") + "\n")?;
-    Ok(())
 }
 
 /// Read all messages from a session file, resolving initial_ids from the

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use ri::{
     ContentBlock, Message, Role, SessionHeader, SessionStore, ThinkingLevel,
-    Tool, ToolOutput,
+    Tool, ToolContext, ToolOutput,
 };
 
 use crate::agent;
@@ -101,7 +101,7 @@ impl Tool for RunAgentTool {
         })
     }
 
-    async fn run(&self, input: Value, cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         let app = match self.app.upgrade() {
             Some(a) => a,
             None => return err("ri server is shutting down"),
@@ -142,8 +142,9 @@ impl Tool for RunAgentTool {
 
         // -- Create or find session --
 
+        let parent = ctx.session_id.as_deref();
         let (session_arc, file_id) = match setup_session(
-            &app, session_id, &message_ids, &cwd,
+            &app, session_id, &message_ids, &ctx.cwd, parent,
         ).await {
             Ok(v) => v,
             Err(e) => return err(&format!("session setup failed: {}", e)),
@@ -153,14 +154,13 @@ impl Tool for RunAgentTool {
 
         if let Some(text) = &user_prompt {
             let mut lock = session_arc.lock().await;
-            let user_id = lock.store.next_id();
-            let user_msg = Message::new(
-                user_id.clone(), Role::User, vec![ContentBlock::text(text)],
-            );
-            if let Err(e) = lock.store.write_message(user_msg) {
-                return err(&format!("failed to write user message: {}", e));
+            let sid = lock.file_id.clone();
+            match lock.store.write_message(&sid,
+                Role::User, vec![ContentBlock::text(text)], None, None,
+            ) {
+                Ok(msg) => lock.message_ids.push(msg.id),
+                Err(e) => return err(&format!("failed to write user message: {}", e)),
             }
-            lock.message_ids.push(user_id);
         }
 
         // -- Spawn the agent loop --
@@ -205,6 +205,7 @@ async fn setup_session(
     session_id: Option<String>,
     message_ids: &[String],
     fallback_cwd: &PathBuf,
+    parent: Option<&str>,
 ) -> eyre::Result<(Arc<Mutex<SessionState>>, String)> {
     // If a session_id was provided, try to find it in memory or on disk.
     if let Some(ref id) = session_id {
@@ -233,6 +234,8 @@ async fn setup_session(
                 cwd: session_cwd,
                 name: header.session,
                 ts: header.ts,
+                file_id: id.clone(),
+                parent: header.parent,
                 events_tx,
                 current_run: None,
             };
@@ -249,17 +252,7 @@ async fn setup_session(
     let cwd_str = fallback_cwd.to_string_lossy().to_string();
     let mut store = SessionStore::new(app.sessions_dir.clone());
     store.load_all()?;
-    let session_path = store.new_session(&name, &cwd_str)?;
-    let file_id = session_path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Persist the initial message_ids in the header metadata so they survive
-    // reload from disk. The messages themselves live in other session files.
-    if !message_ids.is_empty() {
-        rewrite_header_with_initial_ids(&session_path, message_ids)?;
-    }
+    let file_id = store.create_session(&name, &cwd_str, parent, message_ids)?;
 
     let ts = chrono::Utc::now().to_rfc3339();
     let (events_tx, _) = broadcast::channel(256);
@@ -269,6 +262,8 @@ async fn setup_session(
         cwd: fallback_cwd.clone(),
         name: name.clone(),
         ts,
+        file_id: file_id.clone(),
+        parent: parent.map(str::to_string),
         events_tx,
         current_run: None,
     };
@@ -277,20 +272,6 @@ async fn setup_session(
     Ok((arc, file_id))
 }
 
-/// Rewrite the first line of a session JSONL file to include initial_ids.
-fn rewrite_header_with_initial_ids(path: &std::path::Path, ids: &[String]) -> eyre::Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    let mut lines: Vec<&str> = content.lines().collect();
-    if lines.is_empty() {
-        return Ok(());
-    }
-    let mut header: Value = serde_json::from_str(lines[0])?;
-    header["initial_ids"] = json!(ids);
-    let new_header = serde_json::to_string(&header)?;
-    lines[0] = &new_header;
-    std::fs::write(path, lines.join("\n") + "\n")?;
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // readSession
@@ -333,7 +314,7 @@ impl Tool for ReadSessionTool {
         })
     }
 
-    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, _ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         let app = match self.app.upgrade() {
             Some(a) => a,
             None => return err("ri server is shutting down"),
@@ -412,7 +393,7 @@ impl Tool for ReadMessageTool {
         })
     }
 
-    async fn run(&self, input: Value, _cwd: PathBuf, _cancel: CancellationToken) -> ToolOutput {
+    async fn run(&self, input: Value, _ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         let app = match self.app.upgrade() {
             Some(a) => a,
             None => return err("ri server is shutting down"),

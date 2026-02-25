@@ -13,7 +13,7 @@ use futures::Stream;
 use ri::{
     ContentBlock, LlmProvider, Message, Model, Provenance,
     RequestOptions, Role, SessionStore, StreamEvent, ThinkingLevel,
-    Tool, ToolOutput, ToolSchema,
+    Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
 
@@ -44,15 +44,16 @@ pub fn submit<'a>(
     message_ids: &'a mut Vec<String>,
     cwd: &'a Path,
     thinking: ThinkingLevel,
+    session_id: &'a str,
     seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> eyre::Result<impl Stream<Item = AgentEvent> + 'a> {
-    let user_id = store.next_id();
-    let user_msg = Message::new(user_id.clone(), Role::User, vec![ContentBlock::text(text)]);
-    store.write_message(user_msg)?;
-    message_ids.push(user_id);
+    let user_msg = store.write_message(session_id,
+        Role::User, vec![ContentBlock::text(text)], None, None,
+    )?;
+    message_ids.push(user_msg.id);
 
-    Ok(run(provider, model, tools, store, message_ids, cwd, thinking, None, seen_agents, cancel))
+    Ok(run(provider, model, tools, store, message_ids, cwd, thinking, None, session_id, seen_agents, cancel))
 }
 
 /// Run the agent loop: stream LLM response, execute tool calls, persist
@@ -72,6 +73,7 @@ pub fn run<'a>(
     cwd: &'a Path,
     thinking: ThinkingLevel,
     max_tokens: Option<usize>,
+    session_id: &'a str,
     seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> impl Stream<Item = AgentEvent> + 'a {
@@ -81,13 +83,11 @@ pub fn run<'a>(
             .map(|t| (t.name(), t.as_ref()))
             .collect();
 
-        // Extract system prompt from the first System-role message.
         let system_prompt = extract_system_prompt(store, message_ids);
 
         loop {
             if cancel.is_cancelled() { break; }
 
-            // Resolve messages from the pool for this turn.
             let input_ids: Vec<String> = message_ids.clone();
             let messages: Vec<Message> = store.pool.resolve_existing(&input_ids)
                 .into_iter()
@@ -103,35 +103,34 @@ pub fn run<'a>(
                 max_tokens,
             };
 
-            // Start the LLM turn.
             let mut turn = match Turn::start(provider, opts).await {
                 Ok(t) => t,
                 Err(e) => {
                     let msg_text = e.to_string();
                     yield AgentEvent::Error(msg_text.clone());
 
-                    // Build and persist assistant message with error content block.
-                    let assistant_id = store.next_id();
-                    let assistant_msg = Message {
-                        id: assistant_id.clone(),
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::error(msg_text)],
-                        provenance: Some(Provenance {
+                    let assistant_msg = store.write_message(session_id,
+                        Role::Assistant,
+                        vec![ContentBlock::error(msg_text)],
+                        Some(Provenance {
                             input: input_ids,
                             model: model.id.clone(),
                             ts: chrono::Utc::now().to_rfc3339(),
                             usage: None,
                         }),
-                        meta: None,
-                    };
-                    let _ = store.write_message(assistant_msg.clone());
-                    message_ids.push(assistant_id);
-                    yield AgentEvent::MessageComplete(assistant_msg);
+                        None,
+                    );
+                    match assistant_msg {
+                        Ok(msg) => {
+                            message_ids.push(msg.id.clone());
+                            yield AgentEvent::MessageComplete(msg);
+                        }
+                        Err(e) => yield AgentEvent::Error(e.to_string()),
+                    }
                     break;
                 }
             };
 
-            // Stream events to the caller and let Turn accumulate internally.
             let mut turn_error = None;
             while let Some(result) = turn.next().await {
                 if cancel.is_cancelled() { break; }
@@ -151,25 +150,25 @@ pub fn run<'a>(
                 content.push(ContentBlock::error(err));
             }
 
-            // Build and persist the assistant message.
-            let assistant_id = store.next_id();
-            let assistant_msg = Message {
-                id: assistant_id.clone(),
-                role: Role::Assistant,
-                content: content.clone(),
-                provenance: Some(Provenance {
+            // Persist the assistant message.
+            let assistant_msg = match store.write_message(session_id,
+                Role::Assistant,
+                content.clone(),
+                Some(Provenance {
                     input: input_ids,
                     model: model.id.clone(),
                     ts: chrono::Utc::now().to_rfc3339(),
                     usage,
                 }),
-                meta: None,
+                None,
+            ) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    yield AgentEvent::Error(e.to_string());
+                    break;
+                }
             };
-            if let Err(e) = store.write_message(assistant_msg.clone()) {
-                yield AgentEvent::Error(e.to_string());
-                break;
-            }
-            message_ids.push(assistant_id);
+            message_ids.push(assistant_msg.id.clone());
             yield AgentEvent::MessageComplete(assistant_msg);
 
             // Extract tool calls.
@@ -191,14 +190,17 @@ pub fn run<'a>(
                     continue;
                 }
 
-                // Discover AGENTS.md files near the target path for file tools.
                 inject_context_for_tool(call_name, call_input, cwd, seen_agents, &mut results);
 
                 yield AgentEvent::ToolStart { id: call_id.clone(), name: call_name.clone() };
 
                 let output = match tool_map.get(call_name.as_str()) {
                     Some(tool) => {
-                        tool.run(call_input.clone(), cwd.to_path_buf(), cancel.clone()).await
+                        let ctx = ToolContext {
+                            cwd: cwd.to_path_buf(),
+                            session_id: Some(session_id.to_string()),
+                        };
+                        tool.run(call_input.clone(), ctx, cancel.clone()).await
                     }
                     None => ToolOutput {
                         text: format!("Tool '{}' not found", call_name),
@@ -218,20 +220,22 @@ pub fn run<'a>(
             }
 
             // Persist tool results.
-            let tool_id = store.next_id();
-            let tool_msg = Message::new(tool_id.clone(), Role::User, results);
-            if let Err(e) = store.write_message(tool_msg.clone()) {
-                yield AgentEvent::Error(e.to_string());
-                break;
-            }
-            message_ids.push(tool_id);
+            let tool_msg = match store.write_message(session_id,
+                Role::User, results, None, None,
+            ) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    yield AgentEvent::Error(e.to_string());
+                    break;
+                }
+            };
+            message_ids.push(tool_msg.id.clone());
             yield AgentEvent::MessageComplete(tool_msg);
         }
     }
 }
 
 /// Extract the system prompt text from the first System-role message.
-/// Falls back to the base prompt if none is found.
 fn extract_system_prompt(store: &SessionStore, message_ids: &[String]) -> String {
     store.pool.resolve_existing(message_ids).iter()
         .find(|m| m.role == Role::System)
@@ -241,9 +245,8 @@ fn extract_system_prompt(store: &SessionStore, message_ids: &[String]) -> String
         .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string())
 }
 
-/// For file-related tools (Read, Write, Edit), discover any AGENTS.md files
-/// in the directory hierarchy above the target file that haven't been seen yet.
-/// Injects them as Text content blocks before the tool result.
+/// For file-related tools, discover any AGENTS.md files in the directory
+/// hierarchy above the target file that haven't been seen yet.
 fn inject_context_for_tool(
     tool_name: &str,
     input: &serde_json::Value,

@@ -50,6 +50,8 @@ struct SessionSummary {
     name: String,
     ts: String,
     cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
     message_count: usize,
 }
 
@@ -59,6 +61,8 @@ struct SessionDetail {
     name: String,
     ts: String,
     cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
     status: String,
     messages: Vec<Message>,
 }
@@ -103,6 +107,7 @@ async fn list_sessions(
                     name: header.session,
                     ts: header.ts,
                     cwd: header.cwd.unwrap_or_default(),
+                    parent: header.parent,
                     message_count: line_count.saturating_sub(1),
                 });
             }
@@ -124,13 +129,9 @@ async fn create_session(
 
     let mut store = SessionStore::new(state.sessions_dir.clone());
     store.load_all()?;
-    let session_path = store.new_session(&req.name, &req.cwd)?;
+    let id = store.create_session(&req.name, &req.cwd, None, &[])?;
 
     let ts = chrono::Utc::now().to_rfc3339();
-    let id = session_path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
 
     // Write system prompt as first message, tagged with discovered context file
     // paths so they participate in the agents_context seen system.
@@ -139,26 +140,25 @@ async fn create_session(
     let context_paths: Vec<String> = context_files.iter()
         .filter_map(|cf| cf.path.canonicalize().ok()?.to_str().map(str::to_string))
         .collect();
-    let sys_id = store.next_id();
-    let sys_msg = ri::Message {
-        id: sys_id.clone(),
-        role: ri::Role::System,
-        content: vec![ri::ContentBlock::text(&system_prompt)],
-        provenance: None,
-        meta: if context_paths.is_empty() { None } else {
+    let sys_msg = store.write_message(&id,
+        ri::Role::System,
+        vec![ri::ContentBlock::text(&system_prompt)],
+        None,
+        if context_paths.is_empty() { None } else {
             Some(serde_json::json!({ "agents_context": context_paths }))
         },
-    };
-    store.write_message(sys_msg)?;
+    )?;
 
     let (events_tx, _) = broadcast::channel(256);
 
     let session_state = SessionState {
         store,
-        message_ids: vec![sys_id],
+        message_ids: vec![sys_msg.id],
         cwd,
         name: req.name.clone(),
         ts: ts.clone(),
+        file_id: id.clone(),
+        parent: None,
         events_tx,
         current_run: None,
     };
@@ -171,6 +171,7 @@ async fn create_session(
         name: req.name,
         ts,
         cwd: req.cwd,
+        parent: None,
         message_count: 1,
     })))
 }
@@ -193,6 +194,7 @@ async fn get_session(
         name: lock.name.clone(),
         ts: lock.ts.clone(),
         cwd: lock.cwd.to_string_lossy().to_string(),
+        parent: lock.parent.clone(),
         status: lock.status().to_string(),
         messages,
     }))
@@ -774,6 +776,8 @@ async fn get_or_load_session(
         cwd,
         name: header.session,
         ts: header.ts,
+        file_id: id.to_string(),
+        parent: header.parent,
         events_tx,
         current_run: None,
     };

@@ -648,7 +648,16 @@ pub async fn run(
         let context_files = ri_tools::resources::discover_context_files(&cwd);
         ri_tools::resources::build_system_prompt(&context_files)
     };
-    let (mut store, mut message_ids) = SessionStore::init(&session_name, &cwd, &system_prompt)?;
+    let cwd_str = cwd.to_str()
+        .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
+    let sessions_dir = SessionStore::default_dir()?;
+    let mut store = SessionStore::new(sessions_dir);
+    store.load_all()?;
+    let file_id = store.create_session(&session_name, cwd_str, None, &[])?;
+    let sys_msg = store.write_message(&file_id,
+        ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+    )?;
+    let mut message_ids = vec![sys_msg.id];
 
     let mut tui = Tui::new(model.name.clone())?;
     let mut events = EventStream::new();
@@ -666,6 +675,7 @@ pub async fn run(
             &mut message_ids,
             &cwd,
             thinking,
+            &file_id,
             &mut seen_agents,
             &mut events,
         )
@@ -710,6 +720,7 @@ pub async fn run(
                     &mut message_ids,
                     &cwd,
                     thinking,
+                    &file_id,
                     &mut seen_agents,
                     &mut events,
                 )
@@ -737,6 +748,7 @@ async fn run_prompt(
     message_ids: &mut Vec<String>,
     cwd: &PathBuf,
     thinking: ThinkingLevel,
+    session_id: &str,
     seen_agents: &mut std::collections::HashSet<PathBuf>,
     term_events: &mut EventStream,
 ) -> eyre::Result<()> {
@@ -751,7 +763,7 @@ async fn run_prompt(
     let cancel = tokio_util::sync::CancellationToken::new();
     let agent_stream = agent::submit(
         text, provider, model, tools, store, message_ids, cwd, thinking,
-        seen_agents, cancel.clone(),
+        session_id, seen_agents, cancel.clone(),
     )?;
     tokio::pin!(agent_stream);
 

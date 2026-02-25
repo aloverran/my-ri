@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use ri::{
     ContentBlock, LlmProvider, Message, Model, Provenance,
     RequestOptions, Role, StreamEvent, ThinkingLevel,
-    Tool, ToolOutput, ToolSchema,
+    Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
 
@@ -84,10 +84,11 @@ async fn run_agent_loop(
     // Write user message under brief lock, then release.
     {
         let mut lock = session.lock().await;
-        let user_id = lock.store.next_id();
-        let user_msg = Message::new(user_id.clone(), Role::User, vec![ContentBlock::text(user_text)]);
-        lock.store.write_message(user_msg.clone())?;
-        lock.message_ids.push(user_id);
+        let sid = lock.file_id.clone();
+        let user_msg = lock.store.write_message(&sid,
+            Role::User, vec![ContentBlock::text(user_text)], None, None,
+        )?;
+        lock.message_ids.push(user_msg.id.clone());
         let _ = lock.events_tx.send(AgentEvent::MessageComplete(user_msg));
     }
 
@@ -109,7 +110,10 @@ pub(crate) async fn run_loop(
     max_tokens: Option<usize>,
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
-    let tx = session.lock().await.events_tx.clone();
+    let (tx, session_id) = {
+        let lock = session.lock().await;
+        (lock.events_tx.clone(), lock.file_id.clone())
+    };
     let thinking_str = thinking_to_str(thinking).to_string();
 
     // Extract the system prompt from the session's messages once, before looping.
@@ -156,21 +160,18 @@ pub(crate) async fn run_loop(
                 // Build and persist assistant message with error content block.
                 let assistant_msg = {
                     let mut lock = session.lock().await;
-                    let assistant_id = lock.store.next_id();
-                    let msg = Message {
-                        id: assistant_id.clone(),
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::error(msg_text)],
-                        provenance: Some(Provenance {
+                    let msg = lock.store.write_message(&session_id,
+                        Role::Assistant,
+                        vec![ContentBlock::error(msg_text)],
+                        Some(Provenance {
                             input: input_ids,
                             model: model.id.clone(),
                             ts: chrono::Utc::now().to_rfc3339(),
                             usage: None,
                         }),
-                        meta: Some(serde_json::json!({ "thinking": thinking_str })),
-                    };
-                    lock.store.write_message(msg.clone())?;
-                    lock.message_ids.push(assistant_id);
+                        Some(serde_json::json!({ "thinking": thinking_str })),
+                    )?;
+                    lock.message_ids.push(msg.id.clone());
                     msg
                 };
                 let _ = tx.send(AgentEvent::MessageComplete(assistant_msg));
@@ -201,21 +202,18 @@ pub(crate) async fn run_loop(
         // Build and persist assistant message -- brief lock.
         let assistant_msg = {
             let mut lock = session.lock().await;
-            let assistant_id = lock.store.next_id();
-            let msg = Message {
-                id: assistant_id.clone(),
-                role: Role::Assistant,
-                content: content.clone(),
-                provenance: Some(Provenance {
+            let msg = lock.store.write_message(&session_id,
+                Role::Assistant,
+                content.clone(),
+                Some(Provenance {
                     input: input_ids,
                     model: model.id.clone(),
                     ts: chrono::Utc::now().to_rfc3339(),
                     usage,
                 }),
-                meta: Some(serde_json::json!({ "thinking": thinking_str })),
-            };
-            lock.store.write_message(msg.clone())?;
-            lock.message_ids.push(assistant_id);
+                Some(serde_json::json!({ "thinking": thinking_str })),
+            )?;
+            lock.message_ids.push(msg.id.clone());
             msg
         };
         let _ = tx.send(AgentEvent::MessageComplete(assistant_msg.clone()));
@@ -232,7 +230,10 @@ pub(crate) async fn run_loop(
         if calls.is_empty() { break; }
 
         // Execute tool calls.
-        let cwd = session.lock().await.cwd.clone();
+        let (cwd, session_id) = {
+            let lock = session.lock().await;
+            (lock.cwd.clone(), lock.file_id.clone())
+        };
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             if cancel.is_cancelled() {
@@ -244,7 +245,11 @@ pub(crate) async fn run_loop(
 
             let output = match tool_map.get(call_name.as_str()) {
                 Some(tool) => {
-                    tool.run(call_input.clone(), cwd.clone(), cancel.clone()).await
+                    let ctx = ToolContext {
+                        cwd: cwd.clone(),
+                        session_id: Some(session_id.clone()),
+                    };
+                    tool.run(call_input.clone(), ctx, cancel.clone()).await
                 }
                 None => ToolOutput {
                     text: format!("Tool '{}' not found", call_name),
@@ -266,10 +271,10 @@ pub(crate) async fn run_loop(
         // Persist tool results -- brief lock.
         let tool_msg = {
             let mut lock = session.lock().await;
-            let tool_id = lock.store.next_id();
-            let msg = Message::new(tool_id.clone(), Role::User, results);
-            lock.store.write_message(msg.clone())?;
-            lock.message_ids.push(tool_id);
+            let msg = lock.store.write_message(&session_id,
+                Role::User, results, None, None,
+            )?;
+            lock.message_ids.push(msg.id.clone());
             msg
         };
         let _ = tx.send(AgentEvent::MessageComplete(tool_msg));
@@ -361,16 +366,14 @@ async fn inject_discovered_agents(
     }
 
     let mut lock = session.lock().await;
-    let id = lock.store.next_id();
-    let msg = Message {
-        id: id.clone(),
-        role: Role::User,
-        content: vec![ContentBlock::text(text)],
-        provenance: None,
-        meta: Some(serde_json::json!({ "agents_context": paths })),
-    };
-    lock.store.write_message(msg.clone())?;
-    lock.message_ids.push(id);
+    let sid = lock.file_id.clone();
+    let msg = lock.store.write_message(&sid,
+        Role::User,
+        vec![ContentBlock::text(text)],
+        None,
+        Some(serde_json::json!({ "agents_context": paths })),
+    )?;
+    lock.message_ids.push(msg.id.clone());
     drop(lock);
     let _ = tx.send(AgentEvent::MessageComplete(msg));
     Ok(())

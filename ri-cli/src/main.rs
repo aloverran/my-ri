@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     let system_prompt = ri_tools::resources::build_system_prompt(&context_files);
     let sessions_dir = ri::SessionStore::default_dir()?;
     let mut tools = ri_tools::all_tools();
-    tools.extend(meta_tools::create(sessions_dir));
+    tools.extend(meta_tools::create(sessions_dir.clone()));
 
     // Resolve thinking level: CLI flag > settings > default (medium).
     let thinking = resolve_thinking(
@@ -102,7 +102,15 @@ async fn main() -> Result<()> {
 
             let is_json = cli.mode == "json" || cli.output == "json";
 
-            let (mut store, mut message_ids) = SessionStore::init("print", &cwd_path, &system_prompt)?;
+            let cwd_str = cwd_path.to_str()
+                .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
+            let mut store = SessionStore::new(sessions_dir.clone());
+            store.load_all()?;
+            let file_id = store.create_session("print", cwd_str, None, &[])?;
+            let sys_msg = store.write_message(&file_id,
+                ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+            )?;
+            let mut message_ids = vec![sys_msg.id];
 
             let cancel = tokio_util::sync::CancellationToken::new();
             let mut seen_agents = HashSet::new();
@@ -114,7 +122,7 @@ async fn main() -> Result<()> {
 
             let events = agent::submit(
                 &prompt, provider.as_ref(), &model, &tools,
-                &mut store, &mut message_ids, &cwd_path, thinking, &mut seen_agents, cancel,
+                &mut store, &mut message_ids, &cwd_path, thinking, &file_id, &mut seen_agents, cancel,
             )?;
             tokio::pin!(events);
             while let Some(evt) = events.next().await {
