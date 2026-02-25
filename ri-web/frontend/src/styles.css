@@ -987,6 +987,68 @@ input:disabled, textarea:disabled { opacity: 0.5; }
 }
 
 /* ========================
+   Chat view split (sub-sessions panel open)
+   ======================== */
+.chat-view-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.chat-view-split {
+  flex-direction: row;
+}
+.chat-view-split .chat-view {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ========================
+   Sub-sessions panel
+   ======================== */
+.sub-panel {
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+.sub-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 34px;
+  min-height: 34px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sub-panel-title {
+  font-size: var(--size-sm);
+  font-weight: 500;
+  flex: 1;
+}
+.sub-panel-count {
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.sub-panel-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Sub-session count badge in main session list */
+.session-sub-count {
+  color: var(--accent);
+}
+
+/* ========================
    Log toggle button (header)
    ======================== */
 .log-toggle-btn {

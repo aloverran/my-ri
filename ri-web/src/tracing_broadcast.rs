@@ -107,7 +107,12 @@ where
         let mut visitor = FieldVisitor(&mut message);
         event.record(&mut visitor);
 
-        let entry = LogEntry { ts, level, target, message };
+        let entry = LogEntry {
+            ts,
+            level,
+            target,
+            message,
+        };
         self.buffer.push(entry.clone());
         let _ = self.tx.send(entry);
     }

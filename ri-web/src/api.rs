@@ -3,18 +3,18 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use ri::{Message, SessionStore, SessionHeader};
+use ri::{Message, SessionHeader, SessionStore};
 
 use crate::agent::{self, AgentEvent};
 use crate::state::{AppState, LoginInProgress, LoginStatus, RunHandle, SessionState};
@@ -96,7 +96,8 @@ async fn list_sessions(
         for entry in entries {
             let path = entry.path();
             if let Ok(header) = read_session_header(&path) {
-                let id = path.file_stem()
+                let id = path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -124,7 +125,10 @@ async fn create_session(
 ) -> Result<(StatusCode, Json<SessionSummary>), AppError> {
     let cwd = std::path::PathBuf::from(&req.cwd);
     if !cwd.is_dir() {
-        return Err(AppError::BadRequest(format!("'{}' is not a directory", req.cwd)));
+        return Err(AppError::BadRequest(format!(
+            "'{}' is not a directory",
+            req.cwd
+        )));
     }
 
     let mut store = SessionStore::new(state.sessions_dir.clone());
@@ -137,14 +141,18 @@ async fn create_session(
     // paths so they participate in the agents_context seen system.
     let context_files = ri_tools::resources::discover_context_files(&cwd);
     let system_prompt = ri_tools::resources::build_system_prompt(&context_files);
-    let context_paths: Vec<String> = context_files.iter()
+    let context_paths: Vec<String> = context_files
+        .iter()
         .filter_map(|cf| cf.path.canonicalize().ok()?.to_str().map(str::to_string))
         .collect();
-    let sys_msg = store.write_message(&id,
+    let sys_msg = store.write_message(
+        &id,
         ri::Role::System,
         vec![ri::ContentBlock::text(&system_prompt)],
         None,
-        if context_paths.is_empty() { None } else {
+        if context_paths.is_empty() {
+            None
+        } else {
             Some(serde_json::json!({ "agents_context": context_paths }))
         },
     )?;
@@ -163,17 +171,23 @@ async fn create_session(
         current_run: None,
     };
 
-    state.sessions.write().await
+    state
+        .sessions
+        .write()
+        .await
         .insert(id.clone(), Arc::new(Mutex::new(session_state)));
 
-    Ok((StatusCode::CREATED, Json(SessionSummary {
-        id,
-        name: req.name,
-        ts,
-        cwd: req.cwd,
-        parent: None,
-        message_count: 1,
-    })))
+    Ok((
+        StatusCode::CREATED,
+        Json(SessionSummary {
+            id,
+            name: req.name,
+            ts,
+            cwd: req.cwd,
+            parent: None,
+            message_count: 1,
+        }),
+    ))
 }
 
 /// Get session detail with all messages.
@@ -184,7 +198,10 @@ async fn get_session(
     let session = get_or_load_session(&state, &id).await?;
     let lock = session.lock().await;
 
-    let messages: Vec<Message> = lock.store.pool.resolve_existing(&lock.message_ids)
+    let messages: Vec<Message> = lock
+        .store
+        .pool
+        .resolve_existing(&lock.message_ids)
         .into_iter()
         .cloned()
         .collect();
@@ -234,10 +251,18 @@ async fn send_message(
         if let Some(global) = ri_tools::resources::config_dir() {
             templates.extend(ri_tools::prompts::load_templates(&global.join("prompts")));
         }
-        let mut dir = lock.cwd.canonicalize().ok().or_else(|| Some(lock.cwd.clone()));
+        let mut dir = lock
+            .cwd
+            .canonicalize()
+            .ok()
+            .or_else(|| Some(lock.cwd.clone()));
         while let Some(d) = dir {
-            templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
-            if d.join(".git").exists() { break; }
+            templates.extend(ri_tools::prompts::load_templates(
+                &d.join(".agents").join("prompts"),
+            ));
+            if d.join(".git").exists() {
+                break;
+            }
             dir = d.parent().map(std::path::Path::to_path_buf);
         }
         ri_tools::prompts::expand_prompt(&req.text, &templates)
@@ -245,11 +270,13 @@ async fn send_message(
 
     // Resolve model: request > server default.
     let model_id = req.model.unwrap_or_else(|| state.default_model.clone());
-    let (provider, model) = ri_ai::registry::resolve(&model_id).await
+    let (provider, model) = ri_ai::registry::resolve(&model_id)
+        .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     // Resolve thinking: request > server default.
-    let thinking = req.thinking
+    let thinking = req
+        .thinking
         .as_deref()
         .and_then(parse_thinking)
         .unwrap_or(state.default_thinking);
@@ -374,9 +401,7 @@ struct SettingsResponse {
     default_thinking: String,
 }
 
-async fn get_settings(
-    State(state): State<Arc<AppState>>,
-) -> Json<SettingsResponse> {
+async fn get_settings(State(state): State<Arc<AppState>>) -> Json<SettingsResponse> {
     Json(SettingsResponse {
         default_model: state.default_model.clone(),
         default_thinking: thinking_to_str(state.default_thinking).to_string(),
@@ -423,14 +448,15 @@ struct ProviderAuthInfo {
 /// Which providers exist and whether they have stored credentials.
 async fn auth_status() -> Json<Vec<ProviderAuthInfo>> {
     let providers = ri_ai::registry::all_providers();
-    let info: Vec<ProviderAuthInfo> = providers.into_iter().map(|p| {
-        ProviderAuthInfo {
+    let info: Vec<ProviderAuthInfo> = providers
+        .into_iter()
+        .map(|p| ProviderAuthInfo {
             id: p.id().to_string(),
             name: p.name().to_string(),
             authenticated: p.is_authenticated(),
             account: p.account_label(),
-        }
-    }).collect();
+        })
+        .collect();
     Json(info)
 }
 
@@ -463,16 +489,16 @@ async fn auth_login(
         .find(|p| p.id() == req.provider_id)
         .ok_or_else(|| AppError::BadRequest(format!("Unknown provider: {}", req.provider_id)))?;
 
-    let auth_method = provider.begin_login().await
+    let auth_method = provider
+        .begin_login()
+        .await
         .map_err(|e| AppError::Internal(format!("begin_login failed: {}", e)))?
         .ok_or_else(|| AppError::BadRequest("Provider does not support login".into()))?;
 
     let status = std::sync::Arc::new(Mutex::new(LoginStatus::AwaitingCode));
 
     let (method, url) = match &auth_method {
-        ri::AuthMethod::PasteCode { url } => {
-            ("paste_code".to_string(), url.clone())
-        }
+        ri::AuthMethod::PasteCode { url } => ("paste_code".to_string(), url.clone()),
         ri::AuthMethod::LocalCallback { url, port, path } => {
             *status.lock().await = LoginStatus::AwaitingCallback;
             let callback_url = url.clone();
@@ -484,9 +510,7 @@ async fn auth_login(
             let provider_id = req.provider_id.clone();
             let bg_state = state.clone();
             tokio::spawn(async move {
-                let result = run_local_callback(
-                    &bg_state, &provider_id, port, &path,
-                ).await;
+                let result = run_local_callback(&bg_state, &provider_id, port, &path).await;
                 match result {
                     Ok(()) => {
                         *bg_status.lock().await = LoginStatus::Complete;
@@ -518,7 +542,9 @@ async fn run_local_callback(
     port: u16,
     expected_path: &str,
 ) -> eyre::Result<()> {
-    use axum::{extract::Query, response::Html, routing::get as get_route, Router as CallbackRouter};
+    use axum::{
+        Router as CallbackRouter, extract::Query, response::Html, routing::get as get_route,
+    };
     use std::collections::HashMap as StdHashMap;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
@@ -533,7 +559,10 @@ async fn run_local_callback(
                 if let Some(tx) = guard.take() {
                     if let Some(error) = params.get("error") {
                         let _ = tx.send(Err(error.clone()));
-                        return Html("<h1>Authorization failed</h1><p>You can close this window.</p>".to_string());
+                        return Html(
+                            "<h1>Authorization failed</h1><p>You can close this window.</p>"
+                                .to_string(),
+                        );
                     }
                     if let Some(code) = params.get("code") {
                         let _ = tx.send(Ok(code.clone()));
@@ -568,7 +597,8 @@ async fn run_local_callback(
 
     // Complete login on the stored provider instance.
     let logins = state.logins.read().await;
-    let login = logins.get(provider_id)
+    let login = logins
+        .get(provider_id)
         .ok_or_else(|| eyre::eyre!("Login state disappeared"))?;
     let provider = login.provider.lock().await;
     provider.complete_login(&code).await?;
@@ -589,11 +619,14 @@ async fn auth_complete(
     Json(req): Json<AuthCompleteRequest>,
 ) -> Result<StatusCode, AppError> {
     let logins = state.logins.read().await;
-    let login = logins.get(&req.provider_id)
+    let login = logins
+        .get(&req.provider_id)
         .ok_or_else(|| AppError::BadRequest("No login in progress for this provider".into()))?;
 
     let provider = login.provider.lock().await;
-    provider.complete_login(&req.code).await
+    provider
+        .complete_login(&req.code)
+        .await
         .map_err(|e| AppError::Internal(format!("complete_login failed: {}", e)))?;
 
     *login.status.lock().await = LoginStatus::Complete;
@@ -618,7 +651,8 @@ async fn auth_login_status(
     Path(provider_id): Path<String>,
 ) -> Result<Json<AuthLoginStatusResponse>, AppError> {
     let logins = state.logins.read().await;
-    let login = logins.get(&provider_id)
+    let login = logins
+        .get(&provider_id)
         .ok_or_else(|| AppError::NotFound("No login in progress".into()))?;
 
     let status = login.status.lock().await.clone();
@@ -677,7 +711,12 @@ fn agent_event_to_sse(event: &AgentEvent) -> Option<Event> {
             let data = serde_json::json!({ "id": id, "name": name });
             Some(Event::default().event("tool_start").data(data.to_string()))
         }
-        AgentEvent::ToolEnd { id, output, is_error, details } => {
+        AgentEvent::ToolEnd {
+            id,
+            output,
+            is_error,
+            details,
+        } => {
             let data = serde_json::json!({ "id": id, "output": output, "is_error": is_error, "details": details });
             Some(Event::default().event("tool_end").data(data.to_string()))
         }
@@ -689,41 +728,45 @@ fn agent_event_to_sse(event: &AgentEvent) -> Option<Event> {
             let data = serde_json::json!({ "message": msg });
             Some(Event::default().event("agent_error").data(data.to_string()))
         }
-        AgentEvent::Done => {
-            Some(Event::default().event("done").data("{}"))
-        }
+        AgentEvent::Done => Some(Event::default().event("done").data("{}")),
     }
 }
 
 fn stream_event_to_sse(event: &ri::StreamEvent) -> Option<Event> {
     match event {
-        ri::StreamEvent::TextStart => {
-            Some(Event::default().event("text_start").data("{}"))
-        }
+        ri::StreamEvent::TextStart => Some(Event::default().event("text_start").data("{}")),
         ri::StreamEvent::TextDelta(delta) => {
             let data = serde_json::json!({ "delta": delta });
             Some(Event::default().event("text_delta").data(data.to_string()))
         }
-        ri::StreamEvent::TextEnd { .. } => {
-            Some(Event::default().event("text_end").data("{}"))
-        }
-        ri::StreamEvent::ThinkingStart => {
-            Some(Event::default().event("thinking_start").data("{}"))
-        }
+        ri::StreamEvent::TextEnd { .. } => Some(Event::default().event("text_end").data("{}")),
+        ri::StreamEvent::ThinkingStart => Some(Event::default().event("thinking_start").data("{}")),
         ri::StreamEvent::ThinkingDelta(delta) => {
             let data = serde_json::json!({ "delta": delta });
-            Some(Event::default().event("thinking_delta").data(data.to_string()))
+            Some(
+                Event::default()
+                    .event("thinking_delta")
+                    .data(data.to_string()),
+            )
         }
         ri::StreamEvent::ThinkingEnd { .. } => {
             Some(Event::default().event("thinking_end").data("{}"))
         }
         ri::StreamEvent::ToolCallStart { id, name } => {
             let data = serde_json::json!({ "id": id, "name": name });
-            Some(Event::default().event("tool_call_start").data(data.to_string()))
+            Some(
+                Event::default()
+                    .event("tool_call_start")
+                    .data(data.to_string()),
+            )
         }
         ri::StreamEvent::ToolCallDelta { id, json_fragment } => {
             let data = serde_json::json!({ "id": id, "delta": json_fragment });
-            Some(Event::default().event("tool_call_delta").data(data.to_string()))
+            Some(
+                Event::default()
+                    .event("tool_call_delta")
+                    .data(data.to_string()),
+            )
         }
         ri::StreamEvent::ToolCallEnd { .. } => {
             Some(Event::default().event("tool_call_end").data("{}"))
@@ -816,7 +859,9 @@ fn read_session_message_ids(path: &std::path::Path) -> Result<Vec<String>, AppEr
     for line in std::io::BufRead::lines(reader) {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         if first {
             first = false;
@@ -848,15 +893,21 @@ enum AppError {
 }
 
 impl From<std::io::Error> for AppError {
-    fn from(e: std::io::Error) -> Self { AppError::Internal(e.to_string()) }
+    fn from(e: std::io::Error) -> Self {
+        AppError::Internal(e.to_string())
+    }
 }
 
 impl From<eyre::Report> for AppError {
-    fn from(e: eyre::Report) -> Self { AppError::Internal(e.to_string()) }
+    fn from(e: eyre::Report) -> Self {
+        AppError::Internal(e.to_string())
+    }
 }
 
 impl From<serde_json::Error> for AppError {
-    fn from(e: serde_json::Error) -> Self { AppError::Internal(e.to_string()) }
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Internal(e.to_string())
+    }
 }
 
 impl IntoResponse for AppError {

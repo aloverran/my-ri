@@ -49,8 +49,10 @@ async fn main() -> Result<()> {
     let log_buffer = Arc::new(LogBuffer::new(50_000));
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer()
-            .with_filter(tracing_subscriber::EnvFilter::from_default_env()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+        )
         .with(BroadcastLayer::new(log_tx.clone(), log_buffer.clone()))
         .init();
 
@@ -59,7 +61,8 @@ async fn main() -> Result<()> {
     // Load settings from ~/.config/agents/settings.json.
     let settings = ri_tools::resources::load_settings();
 
-    let default_model = cli.model
+    let default_model = cli
+        .model
         .or_else(|| settings.default_model.clone())
         .unwrap_or_else(|| ri_ai::registry::default_model_id().to_string());
 
@@ -77,9 +80,7 @@ async fn main() -> Result<()> {
 
     let app_state = Arc::new_cyclic(|weak| {
         let meta = meta_tools::create(weak.clone());
-        let all_tools: Vec<Arc<dyn ri::Tool>> = base_tools.iter().cloned()
-            .chain(meta)
-            .collect();
+        let all_tools: Vec<Arc<dyn ri::Tool>> = base_tools.iter().cloned().chain(meta).collect();
         AppState {
             tools: all_tools,
             base_tools: base_tools.clone(),
@@ -105,8 +106,7 @@ async fn main() -> Result<()> {
         // Serve built frontend from frontend/dist/, fallback to index.html for SPA routing.
         let frontend_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/dist");
         let index = frontend_dir.join("index.html");
-        let serve = ServeDir::new(&frontend_dir)
-            .fallback(ServeFile::new(&index));
+        let serve = ServeDir::new(&frontend_dir).fallback(ServeFile::new(&index));
         Router::new()
             .nest("/api", api_routes)
             .fallback_service(serve)

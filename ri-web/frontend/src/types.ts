@@ -3,6 +3,7 @@ export interface SessionSummary {
   name: string;
   ts: string;
   cwd: string;
+  parent?: string;
   message_count: number;
 }
 
@@ -11,9 +12,17 @@ export interface SessionDetail {
   name: string;
   ts: string;
   cwd: string;
+  parent?: string;
   status: "idle" | "running";
   messages: Message[];
 }
+
+// -- Navigation --
+
+/** Where the app is: session list or viewing a specific session. */
+export type NavState =
+  | { view: 'list' }
+  | { view: 'session'; id: string };
 
 export interface Message {
   id: string;
@@ -52,4 +61,16 @@ export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return n.toString();
+}
+
+export function relativeTime(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  return new Date(ts).toLocaleDateString();
 }

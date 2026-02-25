@@ -4,6 +4,7 @@ import { getSession, sendMessage, cancelSession, connectSSE, getSettings, getMod
 import { marked } from 'marked';
 import { Message, Usage, DisplayMode, fmtTokens } from '../types';
 import MessageView, { ToolResultInfo } from './MessageView';
+import SubSessionsPanel from './SubSessionsPanel';
 
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
@@ -11,6 +12,8 @@ type ThinkingLevel = typeof THINKING_LEVELS[number];
 interface ChatViewProps {
   sessionId: string;
   onBack: () => void;
+  /** Navigate to a different session (e.g. a sub-session). Pushes history. */
+  onNavigate: (id: string) => void;
   logsOpen: boolean;
   onToggleLogs: () => void;
 }
@@ -90,6 +93,7 @@ export default function ChatView(props: ChatViewProps) {
   const [models, setModels] = createSignal<ModelInfo[]>([]);
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [displayMode, setDisplayMode] = createSignal<DisplayMode>('compact');
+  const [subsOpen, setSubsOpen] = createSignal(false);
 
   // Build a lookup from toolUseId -> result info, derived from all messages.
   // In compact mode, tool_use blocks in assistant messages look up their
@@ -282,6 +286,7 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   return (
+    <div class={`chat-view-wrap ${subsOpen() ? 'chat-view-split' : ''}`}>
     <div class="chat-view">
       <header class="chat-header">
         <button class="back" onclick={props.onBack}>{'\u2190'}</button>
@@ -299,6 +304,12 @@ export default function ChatView(props: ChatViewProps) {
           onclick={() => setDisplayMode(m => m === 'compact' ? 'debug' : 'compact')}
           title={`Display: ${displayMode()}`}
         >{displayMode()}</button>
+        {/* Sub-sessions panel toggle */}
+        <button
+          class={`log-toggle-btn ${subsOpen() ? 'log-toggle-active' : ''}`}
+          onclick={() => setSubsOpen(!subsOpen())}
+          title="Sub-sessions"
+        >sub</button>
         {/* Tracing log panel toggle */}
         <button
           class={`log-toggle-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
@@ -421,6 +432,16 @@ export default function ChatView(props: ChatViewProps) {
           </Show>
         </Show>
       </div>
+    </div>
+
+    {/* Sub-sessions side panel */}
+    <Show when={subsOpen()}>
+      <SubSessionsPanel
+        parentId={props.sessionId}
+        onSelect={(id) => { setSubsOpen(false); props.onNavigate(id); }}
+        onClose={() => setSubsOpen(false)}
+      />
+    </Show>
     </div>
   );
 }

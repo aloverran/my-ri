@@ -12,9 +12,8 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance,
-    RequestOptions, Role, StreamEvent, ThinkingLevel,
-    Tool, ToolContext, ToolOutput, ToolSchema,
+    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, StreamEvent,
+    ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
 
@@ -24,8 +23,16 @@ use crate::state::SessionState;
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Stream(StreamEvent),
-    ToolStart { id: String, name: String },
-    ToolEnd { id: String, output: String, is_error: bool, details: Option<serde_json::Value> },
+    ToolStart {
+        id: String,
+        name: String,
+    },
+    ToolEnd {
+        id: String,
+        output: String,
+        is_error: bool,
+        details: Option<serde_json::Value>,
+    },
     MessageComplete(Message),
     Error(String),
     Done,
@@ -47,8 +54,15 @@ pub fn spawn_agent_loop(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = run_agent_loop(
-            &session, &user_text, provider.as_ref(), &model, &tools, thinking, &cancel,
-        ).await;
+            &session,
+            &user_text,
+            provider.as_ref(),
+            &model,
+            &tools,
+            thinking,
+            &cancel,
+        )
+        .await;
 
         if let Err(e) = result {
             // Best effort: broadcast the error.
@@ -85,8 +99,12 @@ async fn run_agent_loop(
     {
         let mut lock = session.lock().await;
         let sid = lock.file_id.clone();
-        let user_msg = lock.store.write_message(&sid,
-            Role::User, vec![ContentBlock::text(user_text)], None, None,
+        let user_msg = lock.store.write_message(
+            &sid,
+            Role::User,
+            vec![ContentBlock::text(user_text)],
+            None,
+            None,
         )?;
         lock.message_ids.push(user_msg.id.clone());
         let _ = lock.events_tx.send(AgentEvent::MessageComplete(user_msg));
@@ -123,18 +141,24 @@ pub(crate) async fn run_loop(
     };
 
     let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
-    let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
+    let tool_map: HashMap<&str, &dyn Tool> = tools
+        .iter()
         .map(|t| (t.name(), t.as_ref() as &dyn Tool))
         .collect();
 
     loop {
-        if cancel.is_cancelled() { break; }
+        if cancel.is_cancelled() {
+            break;
+        }
 
         // Resolve messages from the pool -- brief lock.
         let (input_ids, messages) = {
             let lock = session.lock().await;
             let ids = lock.message_ids.clone();
-            let msgs: Vec<Message> = lock.store.pool.resolve_existing(&ids)
+            let msgs: Vec<Message> = lock
+                .store
+                .pool
+                .resolve_existing(&ids)
                 .into_iter()
                 .cloned()
                 .collect();
@@ -156,11 +180,12 @@ pub(crate) async fn run_loop(
             Err(e) => {
                 let msg_text = e.to_string();
                 let _ = tx.send(AgentEvent::Error(msg_text.clone()));
-                
+
                 // Build and persist assistant message with error content block.
                 let assistant_msg = {
                     let mut lock = session.lock().await;
-                    let msg = lock.store.write_message(&session_id,
+                    let msg = lock.store.write_message(
+                        &session_id,
                         Role::Assistant,
                         vec![ContentBlock::error(msg_text)],
                         Some(Provenance {
@@ -182,9 +207,13 @@ pub(crate) async fn run_loop(
         // Stream events.
         let mut turn_error = None;
         while let Some(result) = turn.next().await {
-            if cancel.is_cancelled() { break; }
+            if cancel.is_cancelled() {
+                break;
+            }
             match result {
-                Ok(evt) => { let _ = tx.send(AgentEvent::Stream(evt)); }
+                Ok(evt) => {
+                    let _ = tx.send(AgentEvent::Stream(evt));
+                }
                 Err(e) => {
                     let msg_text = e.to_string();
                     let _ = tx.send(AgentEvent::Error(msg_text.clone()));
@@ -202,7 +231,8 @@ pub(crate) async fn run_loop(
         // Build and persist assistant message -- brief lock.
         let assistant_msg = {
             let mut lock = session.lock().await;
-            let msg = lock.store.write_message(&session_id,
+            let msg = lock.store.write_message(
+                &session_id,
                 Role::Assistant,
                 content.clone(),
                 Some(Provenance {
@@ -219,15 +249,23 @@ pub(crate) async fn run_loop(
         let _ = tx.send(AgentEvent::MessageComplete(assistant_msg.clone()));
 
         // Extract tool calls.
-        let calls: Vec<(String, String, serde_json::Value)> = content.iter().filter_map(|c| {
-            if let ContentBlock::ToolUse { id, name, input, .. } = c {
-                Some((id.clone(), name.clone(), input.clone()))
-            } else {
-                None
-            }
-        }).collect();
+        let calls: Vec<(String, String, serde_json::Value)> = content
+            .iter()
+            .filter_map(|c| {
+                if let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = c
+                {
+                    Some((id.clone(), name.clone(), input.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        if calls.is_empty() { break; }
+        if calls.is_empty() {
+            break;
+        }
 
         // Execute tool calls.
         let (cwd, session_id) = {
@@ -237,11 +275,19 @@ pub(crate) async fn run_loop(
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             if cancel.is_cancelled() {
-                results.push(ContentBlock::tool_result_with_details(call_id, "Cancelled", true, None));
+                results.push(ContentBlock::tool_result_with_details(
+                    call_id,
+                    "Cancelled",
+                    true,
+                    None,
+                ));
                 continue;
             }
 
-            let _ = tx.send(AgentEvent::ToolStart { id: call_id.clone(), name: call_name.clone() });
+            let _ = tx.send(AgentEvent::ToolStart {
+                id: call_id.clone(),
+                name: call_name.clone(),
+            });
 
             let output = match tool_map.get(call_name.as_str()) {
                 Some(tool) => {
@@ -265,15 +311,20 @@ pub(crate) async fn run_loop(
                 details: output.details.clone(),
             });
 
-            results.push(ContentBlock::tool_result_with_details(call_id, &output.text, output.is_error, output.details));
+            results.push(ContentBlock::tool_result_with_details(
+                call_id,
+                &output.text,
+                output.is_error,
+                output.details,
+            ));
         }
 
         // Persist tool results -- brief lock.
         let tool_msg = {
             let mut lock = session.lock().await;
-            let msg = lock.store.write_message(&session_id,
-                Role::User, results, None, None,
-            )?;
+            let msg = lock
+                .store
+                .write_message(&session_id, Role::User, results, None, None)?;
             lock.message_ids.push(msg.id.clone());
             msg
         };
@@ -297,11 +348,18 @@ pub fn build_system_prompt(cwd: &std::path::Path) -> String {
 /// Extract the system prompt text from the first System-role message.
 /// Falls back to the base prompt if none is found.
 fn extract_system_prompt(messages: &[&Message]) -> String {
-    messages.iter()
+    messages
+        .iter()
         .find(|m| m.role == Role::System)
-        .and_then(|m| m.content.iter().find_map(|b| {
-            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
-        }))
+        .and_then(|m| {
+            m.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        })
         .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string())
 }
 
@@ -319,7 +377,10 @@ async fn inject_discovered_agents(
     // between loop iterations (compaction, repointing).
     let mut seen: HashSet<PathBuf> = {
         let lock = session.lock().await;
-        lock.store.pool.resolve_existing(&lock.message_ids).iter()
+        lock.store
+            .pool
+            .resolve_existing(&lock.message_ids)
+            .iter()
             .filter_map(|m| m.meta.as_ref()?.get("agents_context")?.as_array())
             .flatten()
             .filter_map(|v| v.as_str().map(PathBuf::from))
@@ -354,20 +415,25 @@ async fn inject_discovered_agents(
         }
     }
 
-    if new_files.is_empty() { return Ok(()); }
+    if new_files.is_empty() {
+        return Ok(());
+    }
 
     let mut text = String::from("# Context Files (discovered)\n");
     let mut paths = Vec::new();
     for cf in &new_files {
         text.push_str(&format!("\n## {}\n\n{}\n", cf.path.display(), cf.content));
         if let Ok(c) = cf.path.canonicalize() {
-            if let Some(s) = c.to_str() { paths.push(s.to_string()); }
+            if let Some(s) = c.to_str() {
+                paths.push(s.to_string());
+            }
         }
     }
 
     let mut lock = session.lock().await;
     let sid = lock.file_id.clone();
-    let msg = lock.store.write_message(&sid,
+    let msg = lock.store.write_message(
+        &sid,
         Role::User,
         vec![ContentBlock::text(text)],
         None,

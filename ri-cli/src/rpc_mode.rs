@@ -1,10 +1,8 @@
 use crate::agent::{self, AgentEvent};
 use crate::print_mode;
-use ri::{
-    LlmProvider, Model, SessionStore, ThinkingLevel, Tool,
-};
+use ri::{LlmProvider, Model, SessionStore, ThinkingLevel, Tool};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -48,28 +46,40 @@ pub async fn run(
     let sessions_dir = match SessionStore::default_dir() {
         Ok(d) => d,
         Err(e) => {
-            output_json(&json!({"type": "error", "message": format!("Failed to find sessions dir: {}", e)}));
+            output_json(
+                &json!({"type": "error", "message": format!("Failed to find sessions dir: {}", e)}),
+            );
             return;
         }
     };
     let mut store = SessionStore::new(sessions_dir);
     if let Err(e) = store.load_all() {
-        output_json(&json!({"type": "error", "message": format!("Failed to load sessions: {}", e)}));
+        output_json(
+            &json!({"type": "error", "message": format!("Failed to load sessions: {}", e)}),
+        );
         return;
     }
     let file_id = match store.create_session("rpc", &cwd_str, None, &[]) {
         Ok(id) => id,
         Err(e) => {
-            output_json(&json!({"type": "error", "message": format!("Failed to create session: {}", e)}));
+            output_json(
+                &json!({"type": "error", "message": format!("Failed to create session: {}", e)}),
+            );
             return;
         }
     };
-    let sys_msg = match store.write_message(&file_id,
-        ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+    let sys_msg = match store.write_message(
+        &file_id,
+        ri::Role::System,
+        vec![ri::ContentBlock::text(&system_prompt)],
+        None,
+        None,
     ) {
         Ok(m) => m,
         Err(e) => {
-            output_json(&json!({"type": "error", "message": format!("Failed to write system message: {}", e)}));
+            output_json(
+                &json!({"type": "error", "message": format!("Failed to write system message: {}", e)}),
+            );
             return;
         }
     };
@@ -78,12 +88,23 @@ pub async fn run(
     if let Some(prompt) = initial_prompt {
         let cancel = tokio_util::sync::CancellationToken::new();
         let events = match agent::submit(
-            &prompt, provider.as_ref(), &model, &tools,
-            &mut store, &mut message_ids, &cwd, thinking, &file_id, &mut seen_agents, cancel,
+            &prompt,
+            provider.as_ref(),
+            &model,
+            &tools,
+            &mut store,
+            &mut message_ids,
+            &cwd,
+            thinking,
+            &file_id,
+            &mut seen_agents,
+            cancel,
         ) {
             Ok(s) => s,
             Err(e) => {
-                output_json(&json!({"type": "error", "message": format!("Failed to submit: {}", e)}));
+                output_json(
+                    &json!({"type": "error", "message": format!("Failed to submit: {}", e)}),
+                );
                 return;
             }
         };
@@ -99,7 +120,9 @@ pub async fn run(
 
     while let Ok(Some(line)) = lines.next_line().await {
         let text = line.trim().to_string();
-        if text.is_empty() { continue; }
+        if text.is_empty() {
+            continue;
+        }
 
         let cmd: RpcCommand = match serde_json::from_str(&text) {
             Ok(c) => c,
@@ -111,7 +134,11 @@ pub async fn run(
 
         match cmd.command_type.as_str() {
             "prompt" | "follow_up" => {
-                let message = cmd.data.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                let message = cmd
+                    .data
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if message.is_empty() {
                     output_json(&json!({"type": "error", "message": "Missing 'message'"}));
                     continue;
@@ -119,12 +146,23 @@ pub async fn run(
 
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let events = match agent::submit(
-                    message, provider.as_ref(), &model, &tools,
-                    &mut store, &mut message_ids, &cwd, thinking, &file_id, &mut seen_agents, cancel,
+                    message,
+                    provider.as_ref(),
+                    &model,
+                    &tools,
+                    &mut store,
+                    &mut message_ids,
+                    &cwd,
+                    thinking,
+                    &file_id,
+                    &mut seen_agents,
+                    cancel,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        output_json(&json!({"type": "error", "message": format!("Failed to submit: {}", e)}));
+                        output_json(
+                            &json!({"type": "error", "message": format!("Failed to submit: {}", e)}),
+                        );
                         continue;
                     }
                 };
@@ -142,7 +180,9 @@ pub async fn run(
             }
 
             other => {
-                output_json(&json!({"type": "error", "message": format!("Unknown command: {}", other)}));
+                output_json(
+                    &json!({"type": "error", "message": format!("Unknown command: {}", other)}),
+                );
             }
         }
     }

@@ -12,17 +12,17 @@ use std::path::PathBuf;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures::StreamExt;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{interval, Duration};
 use ratatui::{
+    Frame, Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph, Widget, Wrap},
-    Frame, Terminal, TerminalOptions, Viewport,
 };
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::time::{Duration, interval};
 use tui_textarea::TextArea;
 
 /// Fixed height of the inline viewport at the bottom of the terminal.
@@ -391,14 +391,22 @@ fn render_preview(frame: &mut Frame, state: &TuiState, area: Rect) {
                 .map(|l| Line::styled(l.to_string(), Style::default().add_modifier(Modifier::DIM)))
                 .collect();
             render_preview_block(
-                frame, area, "thinking", Style::default().fg(Color::DarkGray), lines,
+                frame,
+                area,
+                "thinking",
+                Style::default().fg(Color::DarkGray),
+                lines,
             );
         }
         Phase::Responding if !state.text_buf.is_empty() => {
             let text = tui_markdown::from_str(&state.text_buf);
             let lines: Vec<Line<'static>> = text.lines.into_iter().map(own_line).collect();
             render_preview_block(
-                frame, area, "assistant", Style::default().fg(Color::Blue), lines,
+                frame,
+                area,
+                "assistant",
+                Style::default().fg(Color::Blue),
+                lines,
             );
         }
         Phase::Tool(name) => {
@@ -406,9 +414,7 @@ fn render_preview(frame: &mut Frame, state: &TuiState, area: Rect) {
                 format!("executing: {}", name),
                 Style::default().add_modifier(Modifier::DIM),
             )];
-            render_preview_block(
-                frame, area, name, Style::default().fg(Color::Yellow), lines,
-            );
+            render_preview_block(frame, area, name, Style::default().fg(Color::Yellow), lines);
         }
         _ => {
             let para = Paragraph::new(Text::from(vec![Line::styled(
@@ -450,7 +456,12 @@ fn render_preview_block(
 fn render_status_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
     let spinner = spinner_frame(state.tick);
 
-    let left = format!(" {} {} | {} ", spinner, state.phase.label(), state.model_name);
+    let left = format!(
+        " {} {} | {} ",
+        spinner,
+        state.phase.label(),
+        state.model_name
+    );
     let right = format!(
         " {}in/{}out/{}cache ",
         state.total_usage.input_tokens,
@@ -586,8 +597,8 @@ enum InputResult {
 }
 
 async fn read_input(tui: &mut Tui, events: &mut EventStream) -> io::Result<InputResult> {
-    let mut sigwinch = signal(SignalKind::window_change())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut sigwinch =
+        signal(SignalKind::window_change()).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     let mut size_poll = interval(Duration::from_millis(500));
     loop {
         tokio::select! {
@@ -648,14 +659,19 @@ pub async fn run(
         let context_files = ri_tools::resources::discover_context_files(&cwd);
         ri_tools::resources::build_system_prompt(&context_files)
     };
-    let cwd_str = cwd.to_str()
+    let cwd_str = cwd
+        .to_str()
         .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
     let sessions_dir = SessionStore::default_dir()?;
     let mut store = SessionStore::new(sessions_dir);
     store.load_all()?;
     let file_id = store.create_session(&session_name, cwd_str, None, &[])?;
-    let sys_msg = store.write_message(&file_id,
-        ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+    let sys_msg = store.write_message(
+        &file_id,
+        ri::Role::System,
+        vec![ri::ContentBlock::text(&system_prompt)],
+        None,
+        None,
     )?;
     let mut message_ids = vec![sys_msg.id];
 
@@ -762,13 +778,22 @@ async fn run_prompt(
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let agent_stream = agent::submit(
-        text, provider, model, tools, store, message_ids, cwd, thinking,
-        session_id, seen_agents, cancel.clone(),
+        text,
+        provider,
+        model,
+        tools,
+        store,
+        message_ids,
+        cwd,
+        thinking,
+        session_id,
+        seen_agents,
+        cancel.clone(),
     )?;
     tokio::pin!(agent_stream);
 
-    let mut sigwinch = signal(SignalKind::window_change())
-        .map_err(|e| eyre::eyre!("signal setup: {}", e))?;
+    let mut sigwinch =
+        signal(SignalKind::window_change()).map_err(|e| eyre::eyre!("signal setup: {}", e))?;
     let mut size_poll = interval(Duration::from_millis(500));
 
     loop {
@@ -897,9 +922,7 @@ async fn handle_login(
             }
         }
         Ok(None) => {
-            let _ = tui.emit_and_draw(vec![Line::raw(
-                "No login needed for this provider.",
-            )]);
+            let _ = tui.emit_and_draw(vec![Line::raw("No login needed for this provider.")]);
         }
         Err(e) => {
             let _ = tui.emit_and_draw(vec![Line::styled(
@@ -916,7 +939,7 @@ async fn run_local_callback_login(
     port: u16,
     expected_path: &str,
 ) -> eyre::Result<()> {
-    use axum::{extract::Query, response::Html, routing::get, Router};
+    use axum::{Router, extract::Query, response::Html, routing::get};
     use std::collections::HashMap;
 
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
@@ -1069,8 +1092,12 @@ fn load_prompt_templates(cwd: &std::path::Path) -> Vec<ri_tools::prompts::Prompt
     }
     let mut dir = cwd.canonicalize().ok().or_else(|| Some(cwd.to_path_buf()));
     while let Some(d) = dir {
-        templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
-        if d.join(".git").exists() { break; }
+        templates.extend(ri_tools::prompts::load_templates(
+            &d.join(".agents").join("prompts"),
+        ));
+        if d.join(".git").exists() {
+            break;
+        }
         dir = d.parent().map(Path::to_path_buf);
     }
     templates

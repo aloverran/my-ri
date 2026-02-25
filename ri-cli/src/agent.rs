@@ -11,9 +11,8 @@ use async_stream::stream;
 use futures::Stream;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance,
-    RequestOptions, Role, SessionStore, StreamEvent, ThinkingLevel,
-    Tool, ToolContext, ToolOutput, ToolSchema,
+    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, SessionStore,
+    StreamEvent, ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
 
@@ -25,7 +24,12 @@ pub enum AgentEvent {
     /// A tool is about to be executed.
     ToolStart { id: String, name: String },
     /// A tool has finished executing.
-    ToolEnd { id: String, output: String, is_error: bool, details: Option<serde_json::Value> },
+    ToolEnd {
+        id: String,
+        output: String,
+        is_error: bool,
+        details: Option<serde_json::Value>,
+    },
     /// A message (assistant or tool-result) has been fully constructed and persisted.
     MessageComplete(Message),
     /// A non-fatal error occurred.
@@ -48,12 +52,28 @@ pub fn submit<'a>(
     seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> eyre::Result<impl Stream<Item = AgentEvent> + 'a> {
-    let user_msg = store.write_message(session_id,
-        Role::User, vec![ContentBlock::text(text)], None, None,
+    let user_msg = store.write_message(
+        session_id,
+        Role::User,
+        vec![ContentBlock::text(text)],
+        None,
+        None,
     )?;
     message_ids.push(user_msg.id);
 
-    Ok(run(provider, model, tools, store, message_ids, cwd, thinking, None, session_id, seen_agents, cancel))
+    Ok(run(
+        provider,
+        model,
+        tools,
+        store,
+        message_ids,
+        cwd,
+        thinking,
+        None,
+        session_id,
+        seen_agents,
+        cancel,
+    ))
 }
 
 /// Run the agent loop: stream LLM response, execute tool calls, persist
@@ -237,11 +257,20 @@ pub fn run<'a>(
 
 /// Extract the system prompt text from the first System-role message.
 fn extract_system_prompt(store: &SessionStore, message_ids: &[String]) -> String {
-    store.pool.resolve_existing(message_ids).iter()
+    store
+        .pool
+        .resolve_existing(message_ids)
+        .iter()
         .find(|m| m.role == Role::System)
-        .and_then(|m| m.content.iter().find_map(|b| {
-            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
-        }))
+        .and_then(|m| {
+            m.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        })
         .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string())
 }
 

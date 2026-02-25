@@ -1,6 +1,6 @@
-import { createSignal, createResource, For, Show } from 'solid-js';
+import { createSignal, createResource, createMemo, For, Show } from 'solid-js';
 import { getSessions, createSession } from '../api';
-import { SessionSummary } from '../types';
+import { SessionSummary, relativeTime } from '../types';
 import SettingsPanel from './SettingsPanel';
 
 interface SessionListProps {
@@ -9,24 +9,26 @@ interface SessionListProps {
   onToggleLogs: () => void;
 }
 
-function relativeTime(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  return new Date(ts).toLocaleDateString();
-}
-
 export default function SessionList(props: SessionListProps) {
-  const [sessions, { refetch }] = createResource<SessionSummary[]>(getSessions);
+  const [allSessions, { refetch }] = createResource<SessionSummary[]>(getSessions);
   const [name, setName] = createSignal('');
   const [cwd, setCwd] = createSignal('/Users/john/Projects/ri');
   const [creating, setCreating] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
+
+  // Top-level sessions: those without a parent.
+  const sessions = createMemo(() =>
+    (allSessions() ?? []).filter(s => !s.parent)
+  );
+
+  // Sub-session count per parent id.
+  const subCounts = createMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of allSessions() ?? []) {
+      if (s.parent) counts.set(s.parent, (counts.get(s.parent) ?? 0) + 1);
+    }
+    return counts;
+  });
 
   const handleCreate = async (e: Event) => {
     e.preventDefault();
@@ -91,25 +93,31 @@ export default function SessionList(props: SessionListProps) {
       </form>
 
       <div class="sessions-body">
-        <Show when={sessions.loading}><div class="loading">Loading...</div></Show>
-        <Show when={sessions.error}><div class="error-text">Failed to load sessions</div></Show>
-        <Show when={sessions() && sessions()!.length === 0}>
+        <Show when={allSessions.loading}><div class="loading">Loading...</div></Show>
+        <Show when={allSessions.error}><div class="error-text">Failed to load sessions</div></Show>
+        <Show when={sessions().length === 0 && !allSessions.loading}>
           <div class="empty">No sessions</div>
         </Show>
 
         <For each={sessions()}>
-          {(session) => (
-            <div class="session-row" onclick={() => props.onSelect(session.id)}>
-              <div class="session-row-top">
-                <span class="session-name">{session.name}</span>
-                <div class="session-meta">
-                  <span>{session.message_count} msgs</span>
-                  <span>{relativeTime(session.ts)}</span>
+          {(session) => {
+            const subs = () => subCounts().get(session.id) ?? 0;
+            return (
+              <div class="session-row" onclick={() => props.onSelect(session.id)}>
+                <div class="session-row-top">
+                  <span class="session-name">{session.name}</span>
+                  <div class="session-meta">
+                    <span>{session.message_count} msgs</span>
+                    <Show when={subs() > 0}>
+                      <span class="session-sub-count">{subs()} sub</span>
+                    </Show>
+                    <span>{relativeTime(session.ts)}</span>
+                  </div>
                 </div>
+                <div class="session-cwd">{session.cwd}</div>
               </div>
-              <div class="session-cwd">{session.cwd}</div>
-            </div>
-          )}
+            );
+          }}
         </For>
       </div>
     </div>

@@ -52,7 +52,8 @@ async fn main() -> Result<()> {
     let settings = ri_tools::resources::load_settings();
     let context_files = ri_tools::resources::discover_context_files(&cwd_path);
 
-    let model_id = cli.model
+    let model_id = cli
+        .model
         .or_else(|| settings.default_model.clone())
         .unwrap_or_else(|| ri_ai::registry::default_model_id().to_string());
 
@@ -75,8 +76,12 @@ async fn main() -> Result<()> {
     {
         let mut dir = cwd_path.canonicalize().ok().or(Some(cwd_path.clone()));
         while let Some(d) = dir {
-            templates.extend(ri_tools::prompts::load_templates(&d.join(".agents").join("prompts")));
-            if d.join(".git").exists() { break; }
+            templates.extend(ri_tools::prompts::load_templates(
+                &d.join(".agents").join("prompts"),
+            ));
+            if d.join(".git").exists() {
+                break;
+            }
             dir = d.parent().map(|p| p.to_path_buf());
         }
     }
@@ -85,30 +90,34 @@ async fn main() -> Result<()> {
         "print" | "json" => {
             use futures::StreamExt;
 
-            let raw_prompt = cli.prompt
+            let raw_prompt = cli
+                .prompt
                 .ok_or_else(|| eyre::eyre!("Print mode requires --prompt (-p)"))?;
             let prompt = match ri_tools::prompts::parse_command(&raw_prompt) {
-                Some(cmd) => {
-                    match templates.iter().rfind(|t| t.name == cmd.name) {
-                        Some(t) => {
-                            let args: Vec<&str> = cmd.args_str.split_whitespace().collect();
-                            ri_tools::prompts::substitute_args(&t.content, &args)
-                        }
-                        None => raw_prompt,
+                Some(cmd) => match templates.iter().rfind(|t| t.name == cmd.name) {
+                    Some(t) => {
+                        let args: Vec<&str> = cmd.args_str.split_whitespace().collect();
+                        ri_tools::prompts::substitute_args(&t.content, &args)
                     }
-                }
+                    None => raw_prompt,
+                },
                 None => raw_prompt,
             };
 
             let is_json = cli.mode == "json" || cli.output == "json";
 
-            let cwd_str = cwd_path.to_str()
+            let cwd_str = cwd_path
+                .to_str()
                 .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
             let mut store = SessionStore::new(sessions_dir.clone());
             store.load_all()?;
             let file_id = store.create_session("print", cwd_str, None, &[])?;
-            let sys_msg = store.write_message(&file_id,
-                ri::Role::System, vec![ri::ContentBlock::text(&system_prompt)], None, None,
+            let sys_msg = store.write_message(
+                &file_id,
+                ri::Role::System,
+                vec![ri::ContentBlock::text(&system_prompt)],
+                None,
+                None,
             )?;
             let mut message_ids = vec![sys_msg.id];
 
@@ -121,8 +130,17 @@ async fn main() -> Result<()> {
             };
 
             let events = agent::submit(
-                &prompt, provider.as_ref(), &model, &tools,
-                &mut store, &mut message_ids, &cwd_path, thinking, &file_id, &mut seen_agents, cancel,
+                &prompt,
+                provider.as_ref(),
+                &model,
+                &tools,
+                &mut store,
+                &mut message_ids,
+                &cwd_path,
+                thinking,
+                &file_id,
+                &mut seen_agents,
+                cancel,
             )?;
             tokio::pin!(events);
             while let Some(evt) = events.next().await {
@@ -135,10 +153,22 @@ async fn main() -> Result<()> {
         }
         "interactive" => {
             let seen_agents = HashSet::new();
-            interactive::run(provider, model, tools, cwd_path, cli.prompt, thinking, seen_agents).await?;
+            interactive::run(
+                provider,
+                model,
+                tools,
+                cwd_path,
+                cli.prompt,
+                thinking,
+                seen_agents,
+            )
+            .await?;
         }
         other => {
-            eyre::bail!("Unknown mode '{}'. Expected: interactive, print, json, rpc", other);
+            eyre::bail!(
+                "Unknown mode '{}'. Expected: interactive, print, json, rpc",
+                other
+            );
         }
     }
 

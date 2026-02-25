@@ -14,13 +14,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
-use tokio::sync::{broadcast, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, Message, Role, SessionHeader, SessionStore, ThinkingLevel,
-    Tool, ToolContext, ToolOutput,
+    ContentBlock, Message, Role, SessionHeader, SessionStore, ThinkingLevel, Tool, ToolContext,
+    ToolOutput,
 };
 
 use crate::agent;
@@ -56,7 +56,9 @@ struct RunAgentTool {
 
 #[async_trait]
 impl Tool for RunAgentTool {
-    fn name(&self) -> &str { "runAgent" }
+    fn name(&self) -> &str {
+        "runAgent"
+    }
 
     fn description(&self) -> &str {
         "Starts a single turn of an LLM agent, async, writing the resulting \
@@ -110,7 +112,10 @@ impl Tool for RunAgentTool {
         // -- Parse inputs --
 
         let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
-            Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            Some(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             None => return err("missing 'message_ids' parameter"),
         };
 
@@ -119,8 +124,14 @@ impl Tool for RunAgentTool {
             None => return err("missing 'model_id' parameter"),
         };
 
-        let user_prompt = input.get("user_prompt").and_then(|v| v.as_str()).map(String::from);
-        let session_id = input.get("session_id").and_then(|v| v.as_str()).map(String::from);
+        let user_prompt = input
+            .get("user_prompt")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let session_id = input
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let params = input.get("model_params");
         let thinking = params
@@ -130,7 +141,10 @@ impl Tool for RunAgentTool {
             .unwrap_or(app.default_thinking);
         let max_tokens = params
             .and_then(|p| p.get("max_tokens"))
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
 
         // -- Resolve model --
@@ -143,20 +157,23 @@ impl Tool for RunAgentTool {
         // -- Create or find session --
 
         let parent = ctx.session_id.as_deref();
-        let (session_arc, file_id) = match setup_session(
-            &app, session_id, &message_ids, &ctx.cwd, parent,
-        ).await {
-            Ok(v) => v,
-            Err(e) => return err(&format!("session setup failed: {}", e)),
-        };
+        let (session_arc, file_id) =
+            match setup_session(&app, session_id, &message_ids, &ctx.cwd, parent).await {
+                Ok(v) => v,
+                Err(e) => return err(&format!("session setup failed: {}", e)),
+            };
 
         // -- Optionally write user prompt --
 
         if let Some(text) = &user_prompt {
             let mut lock = session_arc.lock().await;
             let sid = lock.file_id.clone();
-            match lock.store.write_message(&sid,
-                Role::User, vec![ContentBlock::text(text)], None, None,
+            match lock.store.write_message(
+                &sid,
+                Role::User,
+                vec![ContentBlock::text(text)],
+                None,
+                None,
             ) {
                 Ok(msg) => lock.message_ids.push(msg.id),
                 Err(e) => return err(&format!("failed to write user message: {}", e)),
@@ -174,9 +191,15 @@ impl Tool for RunAgentTool {
             let cancel_inner = cancel.clone();
             tokio::spawn(async move {
                 let result = agent::run_loop(
-                    &session, provider.as_ref(), &model,
-                    &tools, thinking, max_tokens, &cancel_inner,
-                ).await;
+                    &session,
+                    provider.as_ref(),
+                    &model,
+                    &tools,
+                    thinking,
+                    max_tokens,
+                    &cancel_inner,
+                )
+                .await;
                 if let Err(e) = result {
                     let lock = session.lock().await;
                     let _ = lock.events_tx.send(agent::AgentEvent::Error(e.to_string()));
@@ -223,7 +246,9 @@ async fn setup_session(
         let path = app.sessions_dir.join(format!("{}.jsonl", id));
         if path.exists() {
             let header = read_header(&path)?;
-            let session_cwd = header.cwd.map(PathBuf::from)
+            let session_cwd = header
+                .cwd
+                .map(PathBuf::from)
                 .unwrap_or_else(|| fallback_cwd.clone());
             let mut store = SessionStore::new(app.sessions_dir.clone());
             store.load_all()?;
@@ -268,10 +293,12 @@ async fn setup_session(
         current_run: None,
     };
     let arc = Arc::new(Mutex::new(state));
-    app.sessions.write().await.insert(file_id.clone(), arc.clone());
+    app.sessions
+        .write()
+        .await
+        .insert(file_id.clone(), arc.clone());
     Ok((arc, file_id))
 }
-
 
 // ---------------------------------------------------------------------------
 // readSession
@@ -284,7 +311,9 @@ struct ReadSessionTool {
 
 #[async_trait]
 impl Tool for ReadSessionTool {
-    fn name(&self) -> &str { "readSession" }
+    fn name(&self) -> &str {
+        "readSession"
+    }
 
     fn description(&self) -> &str {
         "Returns the reflog of the given session, in reverse-chronological \
@@ -324,18 +353,28 @@ impl Tool for ReadSessionTool {
             Some(id) => id,
             None => return err("missing 'session_id' parameter"),
         };
-        let limit = input.get("limit")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        let limit = input
+            .get("limit")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
-        let content_limit = input.get("contentLimit")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        let content_limit = input
+            .get("contentLimit")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
 
         // First check in-memory sessions (they have the most current state).
         let sessions = app.sessions.read().await;
         if let Some(session) = sessions.get(session_id) {
             let lock = session.lock().await;
-            let mut messages: Vec<Message> = lock.store.pool
+            let mut messages: Vec<Message> = lock
+                .store
+                .pool
                 .resolve_existing(&lock.message_ids)
                 .into_iter()
                 .cloned()
@@ -372,7 +411,9 @@ struct ReadMessageTool {
 
 #[async_trait]
 impl Tool for ReadMessageTool {
-    fn name(&self) -> &str { "readMessage" }
+    fn name(&self) -> &str {
+        "readMessage"
+    }
 
     fn description(&self) -> &str {
         "Returns the full text of a single message, and the provenance & \
@@ -439,7 +480,11 @@ impl Tool for ReadMessageTool {
 // ---------------------------------------------------------------------------
 
 fn err(msg: &str) -> ToolOutput {
-    ToolOutput { text: msg.to_string(), is_error: true, details: None }
+    ToolOutput {
+        text: msg.to_string(),
+        is_error: true,
+        details: None,
+    }
 }
 
 fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
@@ -470,11 +515,14 @@ fn read_session_messages(
     let header = read_header(path)?;
 
     // Collect initial_ids from header (cross-session references).
-    let initial_ids: Vec<String> = header.extra
+    let initial_ids: Vec<String> = header
+        .extra
         .get("initial_ids")
         .and_then(|v: &serde_json::Value| v.as_array())
         .map(|arr: &Vec<serde_json::Value>| {
-            arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
         })
         .unwrap_or_default();
 
@@ -486,7 +534,9 @@ fn read_session_messages(
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         if first {
             first = false;
             if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
@@ -509,7 +559,8 @@ fn read_session_messages(
     let mut store = SessionStore::new(sessions_dir.to_path_buf());
     store.load_all()?;
 
-    let mut result: Vec<Message> = initial_ids.iter()
+    let mut result: Vec<Message> = initial_ids
+        .iter()
         .filter_map(|id| store.pool.get(id).cloned())
         .collect();
     result.extend(file_messages);
@@ -527,12 +578,15 @@ fn format_session_output(
         messages.truncate(n);
     }
 
-    let summaries: Vec<Value> = messages.iter().map(|msg| {
-        json!({
-            "id": msg.id,
-            "summary": msg.summarize(),
+    let summaries: Vec<Value> = messages
+        .iter()
+        .map(|msg| {
+            json!({
+                "id": msg.id,
+                "summary": msg.summarize(),
+            })
         })
-    }).collect();
+        .collect();
 
     let text = serde_json::to_string_pretty(&summaries).unwrap_or_default();
     ToolOutput {
@@ -557,9 +611,13 @@ fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Opt
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             // Quick check before full parse.
-            if !trimmed.contains(message_id) { continue; }
+            if !trimmed.contains(message_id) {
+                continue;
+            }
             if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
                 if msg.id == message_id {
                     return Some(msg);

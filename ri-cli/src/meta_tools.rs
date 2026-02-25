@@ -14,12 +14,11 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance,
-    RequestOptions, Role, SessionStore,
+    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, SessionStore,
     ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
@@ -31,8 +30,12 @@ use ri_ai::Turn;
 /// Build the meta-tools for the CLI. Only needs the sessions directory.
 pub fn create(sessions_dir: PathBuf) -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(RunAgentTool { sessions_dir: sessions_dir.clone() }),
-        Box::new(ReadSessionTool { sessions_dir: sessions_dir.clone() }),
+        Box::new(RunAgentTool {
+            sessions_dir: sessions_dir.clone(),
+        }),
+        Box::new(ReadSessionTool {
+            sessions_dir: sessions_dir.clone(),
+        }),
         Box::new(ReadMessageTool { sessions_dir }),
     ]
 }
@@ -47,7 +50,9 @@ struct RunAgentTool {
 
 #[async_trait]
 impl Tool for RunAgentTool {
-    fn name(&self) -> &str { "runAgent" }
+    fn name(&self) -> &str {
+        "runAgent"
+    }
 
     fn description(&self) -> &str {
         "Starts a single turn of an LLM agent, async, writing the resulting \
@@ -96,7 +101,10 @@ impl Tool for RunAgentTool {
         // -- Parse inputs --
 
         let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
-            Some(arr) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            Some(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             None => return err("missing 'message_ids' parameter"),
         };
 
@@ -105,8 +113,14 @@ impl Tool for RunAgentTool {
             None => return err("missing 'model_id' parameter"),
         };
 
-        let user_prompt = input.get("user_prompt").and_then(|v| v.as_str()).map(String::from);
-        let session_id = input.get("session_id").and_then(|v| v.as_str()).map(String::from);
+        let user_prompt = input
+            .get("user_prompt")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let session_id = input
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let settings = ri_tools::resources::load_settings();
         let params = input.get("model_params");
@@ -114,11 +128,19 @@ impl Tool for RunAgentTool {
             .and_then(|p| p.get("thinking"))
             .and_then(|v| v.as_str())
             .and_then(parse_thinking)
-            .or_else(|| settings.default_thinking.as_deref().and_then(parse_thinking))
+            .or_else(|| {
+                settings
+                    .default_thinking
+                    .as_deref()
+                    .and_then(parse_thinking)
+            })
             .unwrap_or(ThinkingLevel::Medium);
         let max_tokens = params
             .and_then(|p| p.get("max_tokens"))
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
 
         // -- Resolve model --
@@ -148,8 +170,12 @@ impl Tool for RunAgentTool {
         // -- Optionally write user prompt --
 
         if let Some(text) = &user_prompt {
-            match store.write_message(&file_id,
-                Role::User, vec![ContentBlock::text(text)], None, None,
+            match store.write_message(
+                &file_id,
+                Role::User,
+                vec![ContentBlock::text(text)],
+                None,
+                None,
             ) {
                 Ok(msg) => msg_ids.push(msg.id),
                 Err(e) => return err(&format!("failed to write user message: {}", e)),
@@ -162,8 +188,17 @@ impl Tool for RunAgentTool {
         let session_id_clone = file_id.clone();
         tokio::spawn(async move {
             if let Err(e) = run_background_loop(
-                provider, model, store, msg_ids, cwd_clone, thinking, max_tokens, session_id_clone,
-            ).await {
+                provider,
+                model,
+                store,
+                msg_ids,
+                cwd_clone,
+                thinking,
+                max_tokens,
+                session_id_clone,
+            )
+            .await
+            {
                 tracing::error!("background agent loop failed: {}", e);
             }
         });
@@ -192,16 +227,26 @@ async fn run_background_loop(
     session_id: String,
 ) -> eyre::Result<()> {
     // Extract system prompt from the first System message.
-    let system_prompt = store.pool.resolve_existing(&message_ids).iter()
+    let system_prompt = store
+        .pool
+        .resolve_existing(&message_ids)
+        .iter()
         .find(|m| m.role == Role::System)
-        .and_then(|m| m.content.iter().find_map(|b| {
-            if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
-        }))
+        .and_then(|m| {
+            m.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        })
         .unwrap_or_else(|| ri_tools::resources::BASE_SYSTEM_PROMPT.to_string());
 
     let tools = ri_tools::all_tools();
     let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
-    let tool_map: HashMap<&str, &dyn Tool> = tools.iter()
+    let tool_map: HashMap<&str, &dyn Tool> = tools
+        .iter()
         .map(|t| (t.name(), t.as_ref() as &dyn Tool))
         .collect();
 
@@ -209,7 +254,9 @@ async fn run_background_loop(
 
     loop {
         let input_ids: Vec<String> = message_ids.clone();
-        let messages: Vec<Message> = store.pool.resolve_existing(&input_ids)
+        let messages: Vec<Message> = store
+            .pool
+            .resolve_existing(&input_ids)
             .into_iter()
             .cloned()
             .collect();
@@ -226,7 +273,8 @@ async fn run_background_loop(
         let mut turn = match Turn::start(provider.as_ref(), opts).await {
             Ok(t) => t,
             Err(e) => {
-                let msg = store.write_message(&session_id,
+                let msg = store.write_message(
+                    &session_id,
                     Role::Assistant,
                     vec![ContentBlock::error(e.to_string())],
                     Some(Provenance {
@@ -244,12 +292,15 @@ async fn run_background_loop(
 
         // Drain the stream (no display in background).
         while let Some(result) = turn.next().await {
-            if let Err(_) = result { break; }
+            if let Err(_) = result {
+                break;
+            }
         }
         let (content, usage) = turn.finish();
 
         // Persist assistant message.
-        let assistant_msg = store.write_message(&session_id,
+        let assistant_msg = store.write_message(
+            &session_id,
             Role::Assistant,
             content.clone(),
             Some(Provenance {
@@ -263,24 +314,35 @@ async fn run_background_loop(
         message_ids.push(assistant_msg.id);
 
         // Extract and execute tool calls.
-        let calls: Vec<(String, String, Value)> = content.iter().filter_map(|c| {
-            if let ContentBlock::ToolUse { id, name, input, .. } = c {
-                Some((id.clone(), name.clone(), input.clone()))
-            } else {
-                None
-            }
-        }).collect();
+        let calls: Vec<(String, String, Value)> = content
+            .iter()
+            .filter_map(|c| {
+                if let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = c
+                {
+                    Some((id.clone(), name.clone(), input.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        if calls.is_empty() { break; }
+        if calls.is_empty() {
+            break;
+        }
 
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             let output = match tool_map.get(call_name.as_str()) {
                 Some(tool) => {
                     // Sub-agents only receive base tools (no runAgent), so no session_id needed.
-                    let ctx = ToolContext { cwd: cwd.clone(), session_id: None };
+                    let ctx = ToolContext {
+                        cwd: cwd.clone(),
+                        session_id: None,
+                    };
                     tool.run(call_input.clone(), ctx, cancel.clone()).await
-                },
+                }
                 None => ToolOutput {
                     text: format!("Tool '{}' not found", call_name),
                     is_error: true,
@@ -288,13 +350,14 @@ async fn run_background_loop(
                 },
             };
             results.push(ContentBlock::tool_result_with_details(
-                call_id, &output.text, output.is_error, output.details,
+                call_id,
+                &output.text,
+                output.is_error,
+                output.details,
             ));
         }
 
-        let tool_msg = store.write_message(&session_id,
-            Role::User, results, None, None,
-        )?;
+        let tool_msg = store.write_message(&session_id, Role::User, results, None, None)?;
         message_ids.push(tool_msg.id);
     }
 
@@ -311,7 +374,9 @@ struct ReadSessionTool {
 
 #[async_trait]
 impl Tool for ReadSessionTool {
-    fn name(&self) -> &str { "readSession" }
+    fn name(&self) -> &str {
+        "readSession"
+    }
 
     fn description(&self) -> &str {
         "Returns the reflog of the given session, in reverse-chronological \
@@ -346,11 +411,19 @@ impl Tool for ReadSessionTool {
             Some(id) => id,
             None => return err("missing 'session_id' parameter"),
         };
-        let limit = input.get("limit")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        let limit = input
+            .get("limit")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
-        let content_limit = input.get("contentLimit")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        let content_limit = input
+            .get("contentLimit")
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .map(|n| n as usize);
 
         let path = self.sessions_dir.join(format!("{}.jsonl", session_id));
@@ -378,7 +451,9 @@ struct ReadMessageTool {
 
 #[async_trait]
 impl Tool for ReadMessageTool {
-    fn name(&self) -> &str { "readMessage" }
+    fn name(&self) -> &str {
+        "readMessage"
+    }
 
     fn description(&self) -> &str {
         "Returns the full text of a single message, and the provenance & \
@@ -424,7 +499,11 @@ impl Tool for ReadMessageTool {
 // ---------------------------------------------------------------------------
 
 fn err(msg: &str) -> ToolOutput {
-    ToolOutput { text: msg.to_string(), is_error: true, details: None }
+    ToolOutput {
+        text: msg.to_string(),
+        is_error: true,
+        details: None,
+    }
 }
 
 fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
@@ -453,7 +532,9 @@ fn read_session_messages(
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
 
         if first {
             first = false;
@@ -461,7 +542,8 @@ fn read_session_messages(
                 if obj.get("session").is_some() && obj.get("role").is_none() {
                     // Extract initial_ids from header.
                     if let Some(arr) = obj.get("initial_ids").and_then(|v| v.as_array()) {
-                        initial_ids = arr.iter()
+                        initial_ids = arr
+                            .iter()
                             .filter_map(|v| v.as_str().map(String::from))
                             .collect();
                     }
@@ -482,7 +564,8 @@ fn read_session_messages(
     // Load the full pool to resolve initial_ids.
     let mut store = SessionStore::new(sessions_dir.to_path_buf());
     store.load_all()?;
-    let mut result: Vec<Message> = initial_ids.iter()
+    let mut result: Vec<Message> = initial_ids
+        .iter()
         .filter_map(|id| store.pool.get(id).cloned())
         .collect();
     result.extend(file_messages);
@@ -498,12 +581,15 @@ fn format_session_output(
         messages.truncate(n);
     }
 
-    let summaries: Vec<Value> = messages.iter().map(|msg| {
-        json!({
-            "id": msg.id,
-            "summary": msg.summarize(),
+    let summaries: Vec<Value> = messages
+        .iter()
+        .map(|msg| {
+            json!({
+                "id": msg.id,
+                "summary": msg.summarize(),
+            })
         })
-    }).collect();
+        .collect();
 
     let text = serde_json::to_string_pretty(&summaries).unwrap_or_default();
     ToolOutput {
@@ -527,9 +613,13 @@ fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Opt
         let reader = BufReader::new(file);
         for line in reader.lines().flatten() {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             // Quick check before full parse.
-            if !trimmed.contains(message_id) { continue; }
+            if !trimmed.contains(message_id) {
+                continue;
+            }
             if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
                 if msg.id == message_id {
                     return Some(msg);

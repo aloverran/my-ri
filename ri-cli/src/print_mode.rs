@@ -19,7 +19,9 @@ pub fn on_event_text(evt: &AgentEvent) {
             }
             _ => {}
         },
-        AgentEvent::ToolEnd { output, is_error, .. } => {
+        AgentEvent::ToolEnd {
+            output, is_error, ..
+        } => {
             if *is_error {
                 eprintln!("[tool error] {}", output);
             }
@@ -48,15 +50,26 @@ pub fn event_to_json(evt: &AgentEvent) -> serde_json::Value {
             StreamEvent::ThinkingStart => json!({"type": "thinking_start"}),
             StreamEvent::ThinkingDelta(d) => json!({"type": "thinking_delta", "delta": d}),
             StreamEvent::ThinkingEnd { .. } => json!({"type": "thinking_end"}),
-            StreamEvent::ToolCallStart { id, name } => json!({"type": "toolcall_start", "id": id, "name": name}),
-            StreamEvent::ToolCallDelta { id, json_fragment } => json!({"type": "toolcall_delta", "id": id, "delta": json_fragment}),
+            StreamEvent::ToolCallStart { id, name } => {
+                json!({"type": "toolcall_start", "id": id, "name": name})
+            }
+            StreamEvent::ToolCallDelta { id, json_fragment } => {
+                json!({"type": "toolcall_delta", "id": id, "delta": json_fragment})
+            }
             StreamEvent::ToolCallEnd { id, .. } => json!({"type": "toolcall_end", "id": id}),
-            StreamEvent::Usage(u) => json!({"type": "usage", "input_tokens": u.input_tokens, "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "cache_write_tokens": u.cache_write_tokens}),
+            StreamEvent::Usage(u) => {
+                json!({"type": "usage", "input_tokens": u.input_tokens, "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "cache_write_tokens": u.cache_write_tokens})
+            }
             StreamEvent::Done => json!({"type": "done"}),
             StreamEvent::Error(msg) => json!({"type": "stream_error", "message": msg}),
         },
         AgentEvent::ToolStart { id, name } => json!({"type": "tool_start", "id": id, "name": name}),
-        AgentEvent::ToolEnd { id, output, is_error, details } => json!({
+        AgentEvent::ToolEnd {
+            id,
+            output,
+            is_error,
+            details,
+        } => json!({
             "type": "tool_end", "id": id, "output": output, "is_error": is_error, "details": details
         }),
         AgentEvent::MessageComplete(msg) => json!({
