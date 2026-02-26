@@ -40,7 +40,13 @@ pub async fn run(
     let mut seen_agents = std::collections::HashSet::new();
     let system_prompt = {
         let context_files = ri_tools::resources::discover_context_files(&cwd);
-        ri_tools::resources::build_system_prompt(&context_files)
+        let mut parts = vec![
+            ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
+            ri_tools::resources::get_environment_system_prompt(),
+            ri_tools::resources::format_context_files(&context_files),
+        ];
+        parts.retain(|p| !p.is_empty());
+        parts.join("\n\n")
     };
     let cwd_str = cwd.to_string_lossy().to_string();
     let sessions_dir = match SessionStore::default_dir() {

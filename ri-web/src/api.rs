@@ -141,7 +141,16 @@ async fn create_session(
     // Write system prompt as first message, tagged with discovered context file
     // paths so they participate in the agents_context seen system.
     let context_files = ri_tools::resources::discover_context_files(&cwd);
-    let system_prompt = ri_tools::resources::build_system_prompt(&context_files);
+    let system_prompt = {
+        let mut parts = vec![
+            ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
+            ri_tools::resources::get_environment_system_prompt(),
+            ri_tools::resources::format_context_files(&context_files),
+        ];
+        parts.retain(|p| !p.is_empty());
+        parts.join("\n\n")
+    };
+
     let context_paths: Vec<String> = context_files
         .iter()
         .filter_map(|cf| cf.path.canonicalize().ok()?.to_str().map(str::to_string))

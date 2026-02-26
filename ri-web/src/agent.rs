@@ -338,13 +338,6 @@ pub(crate) async fn run_loop(
     Ok(())
 }
 
-/// Build the system prompt for a session, discovering context files from
-/// ~/.config/agents/ and project-local .agents/ directories.
-pub fn build_system_prompt(cwd: &std::path::Path) -> String {
-    let context_files = ri_tools::resources::discover_context_files(cwd);
-    ri_tools::resources::build_system_prompt(&context_files)
-}
-
 /// Extract the system prompt text from the first System-role message.
 /// Falls back to the base prompt if none is found.
 fn extract_system_prompt(messages: &[&Message]) -> String {
