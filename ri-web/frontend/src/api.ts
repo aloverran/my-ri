@@ -78,6 +78,7 @@ export interface ProviderAuthInfo {
   id: string;
   name: string;
   authenticated: boolean;
+  can_logout: boolean;
   account?: string;
 }
 
@@ -96,6 +97,10 @@ export function beginLogin(providerId: string): Promise<AuthLoginResponse> {
 
 export function completeLogin(providerId: string, code: string): Promise<void> {
   return apiRequest<void>('POST', '/auth/complete', { provider_id: providerId, code });
+}
+
+export function logout(providerId: string): Promise<void> {
+  return apiRequest<void>('POST', '/auth/logout', { provider_id: providerId });
 }
 
 export interface AuthLoginStatusResponse {

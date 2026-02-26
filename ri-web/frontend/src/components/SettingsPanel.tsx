@@ -1,6 +1,6 @@
 import { createSignal, createResource, For, Show, onCleanup } from 'solid-js';
 import {
-  getAuthStatus, beginLogin, completeLogin, getLoginStatus,
+  getAuthStatus, beginLogin, completeLogin, logout, getLoginStatus,
   ProviderAuthInfo, AuthLoginResponse,
 } from '../api';
 
@@ -99,6 +99,18 @@ export default function SettingsPanel(props: SettingsPanelProps) {
     }
   };
 
+  // Logout from a provider: delete stored credentials.
+  const performLogout = async (providerId: string) => {
+    setProviderState(providerId, { phase: 'completing' });
+    try {
+      await logout(providerId);
+      setProviderState(providerId, { phase: 'idle' });
+      refetch();
+    } catch (e) {
+      setProviderState(providerId, { phase: 'error', message: String(e) });
+    }
+  };
+
   return (
     <div class="settings-panel">
       {/* Header */}
@@ -118,6 +130,7 @@ export default function SettingsPanel(props: SettingsPanelProps) {
               provider={provider}
               state={loginState(provider.id)}
               onLogin={() => startLogin(provider.id)}
+              onLogout={() => performLogout(provider.id)}
               onSubmitCode={(code) => submitCode(provider.id, code)}
               onRetry={() => setProviderState(provider.id, { phase: 'idle' })}
             />
@@ -135,6 +148,7 @@ interface ProviderRowProps {
   provider: ProviderAuthInfo;
   state: LoginState;
   onLogin: () => void;
+  onLogout: () => void;
   onSubmitCode: (code: string) => void;
   onRetry: () => void;
 }
@@ -164,6 +178,11 @@ function ProviderRow(props: ProviderRowProps) {
         </Show>
         <Show when={props.state.phase === 'idle' && props.provider.authenticated}>
           <button class="provider-login-btn" onclick={props.onLogin}>Re-login</button>
+          <Show when={props.provider.can_logout}
+            fallback={<span class="provider-env-tag">env var</span>}
+          >
+            <button class="provider-logout-btn" onclick={props.onLogout}>Logout</button>
+          </Show>
         </Show>
         <Show when={props.state.phase === 'completing'}>
           <span class="provider-status">connecting...</span>

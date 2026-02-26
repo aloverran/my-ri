@@ -32,6 +32,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(auth_login))
         .route("/auth/complete", post(auth_complete))
+        .route("/auth/logout", post(auth_logout))
         .route("/auth/login-status/{provider_id}", get(auth_login_status))
         .with_state(state)
 }
@@ -441,6 +442,7 @@ struct ProviderAuthInfo {
     id: String,
     name: String,
     authenticated: bool,
+    can_logout: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<String>,
 }
@@ -454,6 +456,7 @@ async fn auth_status() -> Json<Vec<ProviderAuthInfo>> {
             id: p.id().to_string(),
             name: p.name().to_string(),
             authenticated: p.is_authenticated(),
+            can_logout: p.can_logout(),
             account: p.account_label(),
         })
         .collect();
@@ -636,6 +639,29 @@ async fn auth_complete(
     // Clean up -- login is done.
     state.logins.write().await.remove(&req.provider_id);
 
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize)]
+struct AuthLogoutRequest {
+    provider_id: String,
+}
+
+/// Logout from a provider: delete stored credentials and clear in-memory auth state.
+async fn auth_logout(
+    Json(req): Json<AuthLogoutRequest>,
+) -> Result<StatusCode, AppError> {
+    let provider = ri_ai::registry::all_providers()
+        .into_iter()
+        .find(|p| p.id() == req.provider_id)
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown provider: {}", req.provider_id)))?;
+
+    provider
+        .logout()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    tracing::info!("Logged out from provider [{}]", req.provider_id);
     Ok(StatusCode::OK)
 }
 
