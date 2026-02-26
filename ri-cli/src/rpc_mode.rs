@@ -38,16 +38,6 @@ pub async fn run(
     thinking: ThinkingLevel,
 ) {
     let mut seen_agents = std::collections::HashSet::new();
-    let system_prompt = {
-        let context_files = ri_tools::resources::discover_context_files(&cwd);
-        let mut parts = vec![
-            ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
-            ri_tools::resources::get_environment_system_prompt(),
-            ri_tools::resources::format_context_files(&context_files),
-        ];
-        parts.retain(|p| !p.is_empty());
-        parts.join("\n\n")
-    };
     let cwd_str = cwd.to_string_lossy().to_string();
     let sessions_dir = match SessionStore::default_dir() {
         Ok(d) => d,
@@ -73,6 +63,18 @@ pub async fn run(
             );
             return;
         }
+    };
+    let system_prompt = {
+        let context_files = ri_tools::resources::discover_context_files(&cwd);
+        let mut parts = vec![
+            ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
+            ri_tools::resources::get_environment_system_prompt(Some(vec![
+                format!("Session: {file_id}"),
+            ])),
+            ri_tools::resources::format_context_files(&context_files),
+        ];
+        parts.retain(|p| !p.is_empty());
+        parts.join("\n\n")
     };
     let sys_msg = match store.write_message(
         &file_id,

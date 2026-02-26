@@ -57,16 +57,6 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| ri_ai::registry::default_model_id().to_string());
 
     let (provider, model) = ri_ai::registry::resolve(&model_id).await?;
-    let system_prompt = {
-        let context_files = ri_tools::resources::discover_context_files(&cwd_path);
-        let mut parts = vec![
-            ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
-            ri_tools::resources::get_environment_system_prompt(),
-            ri_tools::resources::format_context_files(&context_files),
-        ];
-        parts.retain(|p| !p.is_empty());
-        parts.join("\n\n")
-    };
     let sessions_dir = ri::SessionStore::default_dir()?;
     let mut tools = ri_tools::all_tools();
     tools.extend(meta_tools::create(sessions_dir.clone()));
@@ -120,6 +110,18 @@ async fn main() -> Result<()> {
             let mut store = SessionStore::new(sessions_dir.clone());
             store.load_all()?;
             let file_id = store.create_session("print", cwd_str, None, &[])?;
+            let system_prompt = {
+                let context_files = ri_tools::resources::discover_context_files(&cwd_path);
+                let mut parts = vec![
+                    ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
+                    ri_tools::resources::get_environment_system_prompt(Some(vec![
+                        format!("Session: {file_id}"),
+                    ])),
+                    ri_tools::resources::format_context_files(&context_files),
+                ];
+                parts.retain(|p| !p.is_empty());
+                parts.join("\n\n")
+            };
             let sys_msg = store.write_message(
                 &file_id,
                 ri::Role::System,

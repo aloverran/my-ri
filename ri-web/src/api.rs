@@ -144,7 +144,10 @@ async fn create_session(
     let system_prompt = {
         let mut parts = vec![
             ri_tools::resources::BASE_SYSTEM_PROMPT.to_string(),
-            ri_tools::resources::get_environment_system_prompt(),
+            ri_tools::resources::get_environment_system_prompt(Some(vec![
+                format!("Session id for this Ri session: {id}"),
+                format!("Working directory: {}", cwd.display()),
+            ])),
             ri_tools::resources::format_context_files(&context_files),
         ];
         parts.retain(|p| !p.is_empty());
