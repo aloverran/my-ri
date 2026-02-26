@@ -921,6 +921,11 @@ async fn handle_login(
                 }
             }
         }
+        Ok(Some(AuthMethod::TextInput { prompt, .. })) => {
+            let msg = format!("{}\n\nText-input login not yet supported in TUI. Use the web UI or set the GEMINI_API_KEY env var.", prompt);
+            let md = tui_markdown::from_str(&msg);
+            let _ = tui.emit_and_draw(md.lines.into_iter().map(own_line).collect());
+        }
         Ok(None) => {
             let _ = tui.emit_and_draw(vec![Line::raw("No login needed for this provider.")]);
         }

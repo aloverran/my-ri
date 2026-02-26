@@ -381,6 +381,7 @@ struct ModelInfo {
 async fn list_models() -> Json<Vec<ModelInfo>> {
     let mut models = Vec::new();
     for provider in ri_ai::registry::all_providers() {
+        if !provider.is_authenticated() { continue; }
         let provider_id = provider.id().to_string();
         for m in provider.models() {
             models.push(ModelInfo {
@@ -470,9 +471,12 @@ struct AuthLoginRequest {
 
 #[derive(Serialize)]
 struct AuthLoginResponse {
-    /// "paste_code" or "local_callback"
+    /// "paste_code", "local_callback", or "text_input"
     method: String,
+    /// URL for paste_code/local_callback, or prompt text for text_input.
     url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placeholder: Option<String>,
 }
 
 /// Begin an OAuth login flow for a provider. Creates the provider instance,
@@ -500,8 +504,9 @@ async fn auth_login(
 
     let status = std::sync::Arc::new(Mutex::new(LoginStatus::AwaitingCode));
 
-    let (method, url) = match &auth_method {
-        ri::AuthMethod::PasteCode { url } => ("paste_code".to_string(), url.clone()),
+    let (method, url, placeholder) = match &auth_method {
+        ri::AuthMethod::PasteCode { url } => ("paste_code".to_string(), url.clone(), None),
+        ri::AuthMethod::TextInput { prompt, placeholder } => ("text_input".to_string(), prompt.clone(), Some(placeholder.clone())),
         ri::AuthMethod::LocalCallback { url, port, path } => {
             *status.lock().await = LoginStatus::AwaitingCallback;
             let callback_url = url.clone();
@@ -524,7 +529,7 @@ async fn auth_login(
                 }
             });
 
-            ("local_callback".to_string(), callback_url)
+            ("local_callback".to_string(), callback_url, None)
         }
     };
 
@@ -534,7 +539,7 @@ async fn auth_login(
     };
     state.logins.write().await.insert(req.provider_id, login);
 
-    Ok(Json(AuthLoginResponse { method, url }))
+    Ok(Json(AuthLoginResponse { method, url, placeholder }))
 }
 
 /// Start a temporary HTTP server on the callback port, wait for the OAuth

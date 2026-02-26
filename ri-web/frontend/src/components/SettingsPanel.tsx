@@ -7,11 +7,13 @@ import {
 // -- Login flow state machine --
 // Each provider can be in one of these states. The transitions are:
 //   idle -> paste_code (waiting for user to paste) -> idle
+//   idle -> text_input (waiting for user to type a value) -> idle
 //   idle -> local_callback (waiting for browser redirect) -> idle
 // On completion, we refetch auth status to update the UI.
 type LoginState =
   | { phase: 'idle' }
   | { phase: 'paste_code'; url: string }
+  | { phase: 'text_input'; prompt: string; placeholder: string }
   | { phase: 'local_callback'; url: string }
   | { phase: 'completing' }
   | { phase: 'done' }
@@ -49,6 +51,13 @@ export default function SettingsPanel(props: SettingsPanelProps) {
         // Open auth URL in new tab. User will see the code there.
         window.open(resp.url, '_blank');
         setProviderState(providerId, { phase: 'paste_code', url: resp.url });
+      } else if (resp.method === 'text_input') {
+        // Show an inline text input (e.g. for API keys). No URL to open.
+        setProviderState(providerId, {
+          phase: 'text_input',
+          prompt: resp.url,
+          placeholder: resp.placeholder ?? '',
+        });
       } else {
         // LocalCallback: open URL, then poll for completion.
         window.open(resp.url, '_blank');
@@ -207,6 +216,24 @@ function ProviderRow(props: ProviderRowProps) {
             autofocus
           />
           <button type="submit" class="primary" disabled={!code().trim()}>Submit</button>
+        </form>
+      </Show>
+
+      {/* Text input (API key flow) */}
+      <Show when={props.state.phase === 'text_input'}>
+        <form class="paste-code-form" onSubmit={handleCodeSubmit}>
+          <span class="text-input-prompt">
+            {(props.state as { phase: 'text_input'; prompt: string }).prompt}
+          </span>
+          <input
+            type="password"
+            class="paste-code-input"
+            placeholder={(props.state as { phase: 'text_input'; placeholder: string }).placeholder}
+            value={code()}
+            onInput={(e) => setCode(e.currentTarget.value)}
+            autofocus
+          />
+          <button type="submit" class="primary" disabled={!code().trim()}>Save</button>
         </form>
       </Show>
 

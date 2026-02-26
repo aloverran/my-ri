@@ -87,8 +87,9 @@ export function getAuthStatus(): Promise<ProviderAuthInfo[]> {
 }
 
 export interface AuthLoginResponse {
-  method: 'paste_code' | 'local_callback';
+  method: 'paste_code' | 'local_callback' | 'text_input';
   url: string;
+  placeholder?: string;
 }
 
 export function beginLogin(providerId: string): Promise<AuthLoginResponse> {
