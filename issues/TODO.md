@@ -7,8 +7,6 @@ A list of todos and wishlist features for ri.
 - Session parenting! Hide sub-sessions in the main view, and create a navigator in the chat view.
   - A deep message view that shows the session (and children) history pointer and the graph of messages reachable from this session.
 
-Ok first priority is to fix sub agents so that we can get back to task working well again! fix the logout buttons. 
-
 # parallel tool calls
 
 Agent responses should be able to request tool calls to be run in parallel. Possibly this should be default, rather than sequential. Or perhaps it should be per-tool (ie. a web search can always be parallel because it is stateless)?
@@ -22,6 +20,10 @@ I want to be able to inject a message as if the model said it. I wonder how that
 # expose the current session id in the system prompt
 
 although if we fork or bind a new session id........ hm. that blows the cache! damn. we could just add it as a tool or user or model message or something? like system reminder probably.
+
+# fix session id generation
+
+runAgent will generate a session_id even if one is passed, leading to invalid session reads later.
 
 # add the ability to mark a message that has been cached! 
 
@@ -76,6 +78,7 @@ we will add the gemini api itself (interactions rest api) as a provider and use 
 however, big gemini pro is suuuuper expensive so we only want to use it in runMessage form. gemini 3 flash has a liberal free tier so we can probably get it to do agent stuff. 
 
 so we need a way to specify that certain models should be blocked for runAgent? feels like this should be in our runAgent tool, probably.
+
 
 # fork 
 
