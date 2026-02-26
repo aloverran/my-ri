@@ -13,6 +13,7 @@ Agent responses should be able to request tool calls to be run in parallel. Poss
 
 In general I have found that the agent is pretty terrible about judging whether tool calls should be in the background or not. 
 
+
 # ability to select type of message to manually inject
 
 I want to be able to inject a message as if the model said it. I wonder how that might affect its reasoning ability.
@@ -20,6 +21,10 @@ I want to be able to inject a message as if the model said it. I wonder how that
 # expose the current session id in the system prompt
 
 although if we fork or bind a new session id........ hm. that blows the cache! damn. we could just add it as a tool or user or model message or something? like system reminder probably.
+
+# we have no system prompts for sub-agents right now!
+
+# add system info and environment back into the prompt!
 
 # fix session id generation
 
