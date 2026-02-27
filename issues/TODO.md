@@ -7,6 +7,7 @@ A list of todos and wishlist features for ri.
 - Session parenting! Hide sub-sessions in the main view, and create a navigator in the chat view.
   - A deep message view that shows the session (and children) history pointer and the graph of messages reachable from this session.
 
+
 # parallel tool calls
 
 Agent responses should be able to request tool calls to be run in parallel. Possibly this should be default, rather than sequential. Or perhaps it should be per-tool (ie. a web search can always be parallel because it is stateless)?
@@ -18,13 +19,11 @@ In general I have found that the agent is pretty terrible about judging whether 
 
 I want to be able to inject a message as if the model said it. I wonder how that might affect its reasoning ability.
 
-# expose the current session id in the system prompt
+# update session id.. in system prompt when runagent and old session id embedded in prompts?
 
 although if we fork or bind a new session id........ hm. that blows the cache! damn. we could just add it as a tool or user or model message or something? like system reminder probably.
 
 # we have no system prompts for sub-agents right now!
-
-# add system info and environment back into the prompt!
 
 # fix session id generation
 
@@ -116,6 +115,11 @@ We currently have no concept of 'agent is running'. as we break away from tradit
  - end sigil. the summary acts as this often, or we could force one manually
  - subjective. direct when reading sessions to guess if the agent is still working
 I guess though it's working if there are outstanding tool calls or a result is streaming in? or if the last thing we appended was a tool call? yeah i suppose it's only not working on non tool asst call. or rather it's working when there is a tool call outstaning or an asst that returns tool call
+
+## asking for help
+
+thinking on how and when humans learn to ask for help. in many ways I'll do a quick google search just to cue off to see how much my knowledge is wrong or if there's little signals i'm missing.
+maybe the right thing to do is to test the water. you do a smoke test google search or flash geini query to see how much it surprises you. this then informs whether you should ask for help further.
 
 # code quality:
 
