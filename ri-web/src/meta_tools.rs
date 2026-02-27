@@ -65,7 +65,8 @@ impl Tool for RunAgentTool {
          assistant messages and tool call user messages back into the message \
          store, and updating the session to point at the final message. \
          Session can be a new name and the corresponding session will be \
-         created. If not provided a random one will be created and returned."
+         created. If not provided a random one will be created and returned. *Always* use \
+         `readSession` on the current session before using runAgent to pass context from this session."
     }
 
     fn parameters(&self) -> Value {
