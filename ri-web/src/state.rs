@@ -53,6 +53,9 @@ pub enum LoginStatus {
     Failed(String),
 }
 
+/// Default name for newly created sessions, before title generation runs.
+pub const DEFAULT_SESSION_NAME: &str = "New session";
+
 /// Per-session state. Behind Arc<Mutex<>> in the sessions map.
 pub struct SessionState {
     pub store: ri::Store,

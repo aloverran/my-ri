@@ -487,6 +487,13 @@ Rules:
 /// the latest task's result is applied.
 fn spawn_title_generation(session: Arc<Mutex<SessionState>>) {
     tokio::spawn(async move {
+        // Skip if the session already has a generated title.
+        {
+            let lock = session.lock().await;
+            if lock.name != crate::state::DEFAULT_SESSION_NAME {
+                return;
+            }
+        }
         if let Err(e) = generate_title(session).await {
             tracing::debug!("Title generation skipped: {}", e);
         }

@@ -80,7 +80,8 @@ struct SendMessageRequest {
 
 // -- Handlers --
 
-/// List all sessions. Reads headers from JSONL files on disk.
+/// List all sessions. Uses in-memory state when available (which has up-to-date
+/// titles), falls back to scanning the JSONL file for header + title lines.
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<SessionSummary>>, AppError> {
@@ -93,25 +94,48 @@ async fn list_sessions(
             .collect();
         entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
 
+        let sessions = state.sessions.read().await;
+
         for entry in entries {
             let path = entry.path();
-            if let Ok(header) = read_session_header(&path) {
-                let id = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                // Count non-empty lines (messages) minus the header.
-                let line_count = count_lines(&path).unwrap_or(0);
-                summaries.push(SessionSummary {
-                    id,
-                    name: header.session,
-                    ts: header.ts,
-                    cwd: header.cwd.unwrap_or_default(),
-                    parent: header.parent,
-                    message_count: line_count.saturating_sub(1),
-                });
-            }
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Single-pass read: header + title updates + line count.
+            let (header, line_count) = match read_session_summary(&path) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Prefer in-memory name (has live title), fall back to disk.
+            let (name, ts, cwd, parent) = if let Some(session) = sessions.get(&id) {
+                let lock = session.lock().await;
+                (
+                    lock.name.clone(),
+                    lock.ts.clone(),
+                    lock.cwd.to_string_lossy().to_string(),
+                    lock.parent.as_ref().map(|p| p.to_string()),
+                )
+            } else {
+                (
+                    header.session,
+                    header.ts,
+                    header.cwd.unwrap_or_default(),
+                    header.parent,
+                )
+            };
+
+            summaries.push(SessionSummary {
+                id,
+                name,
+                ts,
+                cwd,
+                parent,
+                message_count: line_count.saturating_sub(1),
+            });
         }
     }
 
@@ -131,7 +155,7 @@ async fn create_session(
         )));
     }
 
-    let name = "New session";
+    let name = crate::state::DEFAULT_SESSION_NAME;
     let mut store = Store::new(state.sessions_dir.clone());
     store.load_all()?;
     let id = store.create_session(name, &req.cwd, None)?;
@@ -860,6 +884,13 @@ async fn get_or_load_session(
     let mut store = Store::new(state.sessions_dir.clone());
     store.load_all()?;
 
+    // The store's session data has the correct title (load_all processes
+    // title lines), so prefer it over the raw header which is first-line only.
+    let name = store
+        .get_session(id)
+        .map(|s| s.name.clone())
+        .unwrap_or(header.session.clone());
+
     // Prefer the head step's context (written by checkpoint), fall back to
     // scanning msg lines for sessions that predate step/head tracking.
     let message_ids: Vec<MessageId> = match store.head_context(id) {
@@ -872,7 +903,7 @@ async fn get_or_load_session(
         store,
         message_ids,
         cwd,
-        name: header.session,
+        name,
         ts: header.ts,
         file_id: SessionId::from(id),
         parent: header.parent.map(SessionId::from),
@@ -897,13 +928,38 @@ fn read_session_header(path: &std::path::Path) -> Result<SessionHeader, AppError
     Ok(header)
 }
 
-fn count_lines(path: &std::path::Path) -> Result<usize, AppError> {
+/// Read a session's header, applying any title-update lines found later in
+/// the file, and count non-empty lines in a single pass.
+fn read_session_summary(
+    path: &std::path::Path,
+) -> Result<(SessionHeader, usize), AppError> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
-    let count = std::io::BufRead::lines(reader)
-        .filter(|l| l.as_ref().is_ok_and(|s| !s.trim().is_empty()))
-        .count();
-    Ok(count)
+    let mut header: Option<SessionHeader> = None;
+    let mut line_count: usize = 0;
+
+    for line in std::io::BufRead::lines(reader) {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        line_count += 1;
+
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if header.is_none() {
+                if let Ok(h) = serde_json::from_value::<SessionHeader>(obj) {
+                    header = Some(h);
+                }
+            } else if let Some(title) = obj.get("title").and_then(|v| v.as_str()) {
+                if let Some(h) = header.as_mut() {
+                    h.session = title.to_string();
+                }
+            }
+        }
+    }
+
+    header
+        .map(|h| (h, line_count))
+        .ok_or_else(|| AppError::NotFound("No header found in session file".into()))
 }
 
 fn read_session_message_ids(path: &std::path::Path) -> Result<Vec<String>, AppError> {
