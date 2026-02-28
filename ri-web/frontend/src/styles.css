@@ -1086,13 +1086,30 @@ input:disabled, textarea:disabled { opacity: 0.5; }
    Log Panel
    ======================== */
 .log-panel {
-  width: 480px;
+  /* Width is set via inline style (signal-driven, draggable). */
   flex-shrink: 0;
+  max-width: 80vw;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   background: var(--bg-0);
   overflow: hidden;
+  position: relative;
+}
+
+/* Left-edge drag handle for resizing the panel width. Overlaps the
+   border so it feels like grabbing the edge itself. */
+.log-panel-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 10;
+}
+.log-panel-resize-handle:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .log-panel-header {
@@ -1162,6 +1179,7 @@ input:disabled, textarea:disabled { opacity: 0.5; }
 /* Log entries area */
 .log-entries {
   flex: 1;
+  min-height: 80px;
   overflow-y: auto;
   overflow-x: hidden;
   font-family: var(--font-mono);
@@ -1189,6 +1207,7 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   gap: 0;
   padding: 0 8px;
   white-space: nowrap;
+  cursor: default;
 }
 .log-line:hover { background: var(--bg-hover); }
 
@@ -1222,4 +1241,69 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   color: var(--text-0);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Panel body: fills remaining space below header, splits between
+   log entries list and (optional) detail pane. */
+.log-panel-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Selected log line highlight */
+.log-line-selected {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+.log-line-selected:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* Horizontal drag handle between log list and detail pane */
+.log-detail-resize-handle {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: var(--border);
+}
+.log-detail-resize-handle:hover {
+  background: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* Detail pane: shows full wrapped text of the selected entry */
+.log-detail {
+  /* Height is set via inline style (signal-driven, draggable). */
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--size-xs);
+  padding: 6px 8px;
+}
+.log-detail-line {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+.log-detail-ts {
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.log-detail-level {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.log-detail-target {
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.log-detail-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-0);
+  line-height: 1.5;
 }

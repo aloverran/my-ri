@@ -20,6 +20,16 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
   WARN: 'log-warn', ERROR: 'log-error',
 };
 
+/** Panel width constraints (px). */
+const MIN_PANEL_W = 200;
+const MAX_PANEL_RATIO = 0.8;
+const DEFAULT_PANEL_W = 480;
+
+/** Detail pane height constraints (px). */
+const MIN_DETAIL_H = 60;
+const MAX_DETAIL_RATIO = 0.6;
+const DEFAULT_DETAIL_H = 200;
+
 interface LogPanelProps {
   onClose: () => void;
 }
@@ -33,6 +43,12 @@ interface LogPanelProps {
  * stops when they scroll up to read.
  *
  * Only the last 5k filtered entries are rendered to keep the DOM fast.
+ *
+ * Features:
+ *  - Drag the left edge to resize the panel width.
+ *  - Click a log entry to select it; a detail pane at the bottom shows
+ *    the full wrapped text (like Unity's Console). The detail pane split
+ *    is also draggable.
  */
 export default function LogPanel(props: LogPanelProps) {
   const [entries, setEntries] = createSignal<LogEntry[]>([]);
@@ -40,6 +56,9 @@ export default function LogPanel(props: LogPanelProps) {
   const [search, setSearch] = createSignal('');
   const [following, setFollowing] = createSignal(true);
   const [paused, setPaused] = createSignal(false);
+  const [panelWidth, setPanelWidth] = createSignal(DEFAULT_PANEL_W);
+  const [selectedEntry, setSelectedEntry] = createSignal<LogEntry | null>(null);
+  const [detailHeight, setDetailHeight] = createSignal(DEFAULT_DETAIL_H);
 
   // SSE connection -- connects once, accumulates entries.
   let eventSource: EventSource | null = null;
@@ -61,7 +80,10 @@ export default function LogPanel(props: LogPanelProps) {
   };
 
   connect();
-  onCleanup(() => eventSource?.close());
+  onCleanup(() => {
+    eventSource?.close();
+    endDrag(); // Clean up body styles if unmounted mid-drag.
+  });
 
   // Flush pause buffer when unpausing.
   createEffect(() => {
@@ -101,8 +123,68 @@ export default function LogPanel(props: LogPanelProps) {
     }
   });
 
+  // -- Drag helpers --
+  // Both resize handles use pointer capture so the mouse can leave the
+  // handle element without dropping the drag. Body cursor and user-select
+  // are set while dragging to prevent flicker and text selection.
+  // Cleanup uses onLostPointerCapture instead of onPointerUp -- it fires
+  // in every case: normal release, element removal, browser cancellation.
+
+  const beginDrag = (cursor: string) => {
+    document.body.style.cursor = cursor;
+    document.body.style.userSelect = 'none';
+  };
+
+  const endDrag = () => {
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+
+  // -- Horizontal (panel width) resize --
+  let widthHandleRef!: HTMLDivElement;
+
+  const onWidthPointerDown = (e: PointerEvent) => {
+    widthHandleRef.setPointerCapture(e.pointerId);
+    beginDrag('col-resize');
+  };
+
+  const onWidthPointerMove = (e: PointerEvent) => {
+    if (!widthHandleRef.hasPointerCapture(e.pointerId)) return;
+    const w = window.innerWidth - e.clientX;
+    const clamped = Math.max(MIN_PANEL_W, Math.min(w, window.innerWidth * MAX_PANEL_RATIO));
+    setPanelWidth(clamped);
+  };
+
+  // -- Vertical (detail pane height) resize --
+  let detailHandleRef!: HTMLDivElement;
+  let panelBodyRef!: HTMLDivElement;
+
+  const onDetailPointerDown = (e: PointerEvent) => {
+    detailHandleRef.setPointerCapture(e.pointerId);
+    beginDrag('row-resize');
+  };
+
+  const onDetailPointerMove = (e: PointerEvent) => {
+    if (!detailHandleRef.hasPointerCapture(e.pointerId)) return;
+    const panelRect = panelBodyRef.getBoundingClientRect();
+    // Subtract handle height (4px) so the handle tracks the cursor accurately.
+    const h = panelRect.bottom - e.clientY - 4;
+    const maxH = panelRect.height * MAX_DETAIL_RATIO;
+    const clamped = Math.max(MIN_DETAIL_H, Math.min(h, maxH));
+    setDetailHeight(clamped);
+  };
+
   return (
-    <div class="log-panel">
+    <div class="log-panel" style={{ width: `${panelWidth()}px` }}>
+      {/* Left-edge drag handle for panel width resize */}
+      <div
+        class="log-panel-resize-handle"
+        ref={widthHandleRef}
+        onPointerDown={onWidthPointerDown}
+        onPointerMove={onWidthPointerMove}
+        onLostPointerCapture={endDrag}
+      />
+
       {/* Header: title + controls + close */}
       <div class="log-panel-header">
         <span class="log-panel-title">Tracing</span>
@@ -138,7 +220,7 @@ export default function LogPanel(props: LogPanelProps) {
         {/* Clear */}
         <button
           class="log-panel-btn"
-          onclick={() => setEntries([])}
+          onclick={() => { setEntries([]); setSelectedEntry(null); }}
           title="Clear"
         >{'\u2715'}</button>
 
@@ -150,37 +232,67 @@ export default function LogPanel(props: LogPanelProps) {
         >{'\u2190'}</button>
       </div>
 
-      {/* Log entries */}
-      <div
-        class="log-entries"
-        ref={(el) => {
-          scrollEl = el;
-          el.addEventListener('scroll', () => {
-            setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-          }, { passive: true });
-        }}
-      >
-        {/* Truncation notice when filtered results exceed render cap */}
-        <Show when={filtered().length > MAX_RENDERED}>
-          <div class="log-truncated">
-            showing last {MAX_RENDERED} of {filtered().length} matches
-          </div>
-        </Show>
-        <Show when={rendered().length === 0}>
-          <div class="log-empty">
-            {entries().length === 0 ? 'Waiting for log events...' : 'No entries match filter'}
-          </div>
-        </Show>
-        <For each={rendered()}>
-          {(entry) => (
-            <div class={`log-line ${LEVEL_CLASS[entry.level]}`}>
-              <span class="log-ts">{entry.ts}</span>
-              <span class={`log-level ${LEVEL_CLASS[entry.level]}`}>{entry.level.padEnd(5)}</span>
-              <span class="log-target">{entry.target}</span>
-              <span class="log-msg">{entry.message}</span>
+      {/* Panel body: log entries list + optional detail pane, split vertically */}
+      <div class="log-panel-body" ref={panelBodyRef}>
+        {/* Log entries */}
+        <div
+          class="log-entries"
+          ref={(el) => {
+            scrollEl = el;
+            el.addEventListener('scroll', () => {
+              setFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+            }, { passive: true });
+          }}
+        >
+          {/* Truncation notice when filtered results exceed render cap */}
+          <Show when={filtered().length > MAX_RENDERED}>
+            <div class="log-truncated">
+              showing last {MAX_RENDERED} of {filtered().length} matches
             </div>
+          </Show>
+          <Show when={rendered().length === 0}>
+            <div class="log-empty">
+              {entries().length === 0 ? 'Waiting for log events...' : 'No entries match filter'}
+            </div>
+          </Show>
+          <For each={rendered()}>
+            {(entry) => (
+              <div
+                class={`log-line ${LEVEL_CLASS[entry.level]} ${selectedEntry() === entry ? 'log-line-selected' : ''}`}
+                onClick={() => setSelectedEntry(entry)}
+              >
+                <span class="log-ts">{entry.ts}</span>
+                <span class={`log-level ${LEVEL_CLASS[entry.level]}`}>{entry.level.padEnd(5)}</span>
+                <span class="log-target">{entry.target}</span>
+                <span class="log-msg">{entry.message}</span>
+              </div>
+            )}
+          </For>
+        </div>
+
+        {/* Detail pane: shows full text of selected entry */}
+        <Show when={selectedEntry()}>
+          {(entry) => (
+            <>
+              {/* Horizontal drag handle for detail pane height */}
+              <div
+                class="log-detail-resize-handle"
+                ref={detailHandleRef}
+                onPointerDown={onDetailPointerDown}
+                onPointerMove={onDetailPointerMove}
+                onLostPointerCapture={endDrag}
+              />
+              <div class="log-detail" style={{ height: `${detailHeight()}px` }}>
+                <div class={`log-detail-line ${LEVEL_CLASS[entry().level]}`}>
+                  <span class="log-detail-ts">{entry().ts}</span>
+                  <span class={`log-detail-level ${LEVEL_CLASS[entry().level]}`}>{entry().level}</span>
+                  <span class="log-detail-target">{entry().target}</span>
+                </div>
+                <div class="log-detail-message">{entry().message}</div>
+              </div>
+            </>
           )}
-        </For>
+        </Show>
       </div>
     </div>
   );
