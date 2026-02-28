@@ -1,6 +1,6 @@
 use crate::agent::{self, AgentEvent};
 use crate::print_mode;
-use ri::{LlmProvider, Model, SessionStore, ThinkingLevel, Tool};
+use ri::{LlmProvider, Model, Store, ThinkingLevel, Tool};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -39,7 +39,7 @@ pub async fn run(
 ) {
     let mut seen_agents = std::collections::HashSet::new();
     let cwd_str = cwd.to_string_lossy().to_string();
-    let sessions_dir = match SessionStore::default_dir() {
+    let sessions_dir = match Store::default_dir() {
         Ok(d) => d,
         Err(e) => {
             output_json(
@@ -48,14 +48,14 @@ pub async fn run(
             return;
         }
     };
-    let mut store = SessionStore::new(sessions_dir);
+    let mut store = Store::new(sessions_dir);
     if let Err(e) = store.load_all() {
         output_json(
             &json!({"type": "error", "message": format!("Failed to load sessions: {}", e)}),
         );
         return;
     }
-    let file_id = match store.create_session("rpc", &cwd_str, None, &[]) {
+    let file_id = match store.create_session("rpc", &cwd_str, None) {
         Ok(id) => id,
         Err(e) => {
             output_json(
@@ -81,7 +81,6 @@ pub async fn run(
         ri::Role::System,
         vec![ri::ContentBlock::text(&system_prompt)],
         None,
-        None,
     ) {
         Ok(m) => m,
         Err(e) => {
@@ -92,6 +91,12 @@ pub async fn run(
         }
     };
     let mut message_ids = vec![sys_msg.id];
+    if let Err(e) = store.checkpoint(&file_id, &message_ids, None) {
+        output_json(
+            &json!({"type": "error", "message": format!("Failed to checkpoint: {}", e)}),
+        );
+        return;
+    }
 
     if let Some(prompt) = initial_prompt {
         let cancel = tokio_util::sync::CancellationToken::new();

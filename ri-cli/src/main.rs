@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::eyre::Result;
-use ri::{SessionStore, ThinkingLevel};
+use ri::{Store, ThinkingLevel};
 use std::collections::HashSet;
 
 mod agent;
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| ri_ai::registry::default_model_id().to_string());
 
     let (provider, model) = ri_ai::registry::resolve(&model_id).await?;
-    let sessions_dir = ri::SessionStore::default_dir()?;
+    let sessions_dir = ri::Store::default_dir()?;
     let mut tools = ri_tools::all_tools();
     tools.extend(meta_tools::create(sessions_dir.clone()));
 
@@ -107,9 +107,9 @@ async fn main() -> Result<()> {
             let cwd_str = cwd_path
                 .to_str()
                 .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
-            let mut store = SessionStore::new(sessions_dir.clone());
+            let mut store = Store::new(sessions_dir.clone());
             store.load_all()?;
-            let file_id = store.create_session("print", cwd_str, None, &[])?;
+            let file_id = store.create_session("print", cwd_str, None)?;
             let system_prompt = {
                 let context_files = ri_tools::resources::discover_context_files(&cwd_path);
                 let mut parts = vec![
@@ -127,9 +127,9 @@ async fn main() -> Result<()> {
                 ri::Role::System,
                 vec![ri::ContentBlock::text(&system_prompt)],
                 None,
-                None,
             )?;
             let mut message_ids = vec![sys_msg.id];
+            store.checkpoint(&file_id, &message_ids, None)?;
 
             let cancel = tokio_util::sync::CancellationToken::new();
             let mut seen_agents = HashSet::new();

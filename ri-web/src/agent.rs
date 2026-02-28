@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, StreamEvent,
+    ContentBlock, LlmProvider, Message, Model, RequestOptions, Role, StreamEvent,
     ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
@@ -104,7 +104,6 @@ async fn run_agent_loop(
             Role::User,
             vec![ContentBlock::text(user_text)],
             None,
-            None,
         )?;
         lock.message_ids.push(user_msg.id.clone());
         let _ = lock.events_tx.send(AgentEvent::MessageComplete(user_msg));
@@ -137,7 +136,7 @@ pub(crate) async fn run_loop(
     // Extract the system prompt from the session's messages once, before looping.
     let system_prompt = {
         let lock = session.lock().await;
-        extract_system_prompt(&lock.store.pool.resolve_existing(&lock.message_ids))
+        extract_system_prompt(&lock.store.pool.resolve(&lock.message_ids))
     };
 
     let tool_schemas: Vec<ToolSchema> = tools.iter().map(|t| t.schema()).collect();
@@ -152,17 +151,16 @@ pub(crate) async fn run_loop(
         }
 
         // Resolve messages from the pool -- brief lock.
-        let (input_ids, messages) = {
+        let messages = {
             let lock = session.lock().await;
-            let ids = lock.message_ids.clone();
             let msgs: Vec<Message> = lock
                 .store
                 .pool
-                .resolve_existing(&ids)
+                .resolve(&lock.message_ids)
                 .into_iter()
                 .cloned()
                 .collect();
-            (ids, msgs)
+            msgs
         };
 
         let opts = RequestOptions {
@@ -188,13 +186,11 @@ pub(crate) async fn run_loop(
                         &session_id,
                         Role::Assistant,
                         vec![ContentBlock::error(msg_text)],
-                        Some(Provenance {
-                            input: input_ids,
-                            model: model.id.clone(),
-                            ts: chrono::Utc::now().to_rfc3339(),
-                            usage: None,
-                        }),
-                        Some(serde_json::json!({ "thinking": thinking_str })),
+                        Some(serde_json::json!({
+                            "model": model.id,
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                            "thinking": thinking_str,
+                        })),
                     )?;
                     lock.message_ids.push(msg.id.clone());
                     msg
@@ -235,13 +231,12 @@ pub(crate) async fn run_loop(
                 &session_id,
                 Role::Assistant,
                 content.clone(),
-                Some(Provenance {
-                    input: input_ids,
-                    model: model.id.clone(),
-                    ts: chrono::Utc::now().to_rfc3339(),
-                    usage,
-                }),
-                Some(serde_json::json!({ "thinking": thinking_str })),
+                Some(serde_json::json!({
+                    "model": model.id,
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                    "usage": usage,
+                    "thinking": thinking_str,
+                })),
             )?;
             lock.message_ids.push(msg.id.clone());
             msg
@@ -324,7 +319,7 @@ pub(crate) async fn run_loop(
             let mut lock = session.lock().await;
             let msg = lock
                 .store
-                .write_message(&session_id, Role::User, results, None, None)?;
+                .write_message(&session_id, Role::User, results, None)?;
             lock.message_ids.push(msg.id.clone());
             msg
         };
@@ -332,6 +327,14 @@ pub(crate) async fn run_loop(
 
         // Discover and inject AGENTS.md files near files accessed by tool calls.
         inject_discovered_agents(&calls, &cwd, session, &tx).await?;
+    }
+
+    // Persist the final context as a step so the session can be reloaded from disk.
+    {
+        let mut lock = session.lock().await;
+        let sid = lock.file_id.clone();
+        let ids = lock.message_ids.clone();
+        lock.store.checkpoint(&sid, &ids, None)?;
     }
 
     let _ = tx.send(AgentEvent::Done);
@@ -372,7 +375,7 @@ async fn inject_discovered_agents(
         let lock = session.lock().await;
         lock.store
             .pool
-            .resolve_existing(&lock.message_ids)
+            .resolve(&lock.message_ids)
             .iter()
             .filter_map(|m| m.meta.as_ref()?.get("agents_context")?.as_array())
             .flatten()
@@ -429,7 +432,6 @@ async fn inject_discovered_agents(
         &sid,
         Role::User,
         vec![ContentBlock::text(text)],
-        None,
         Some(serde_json::json!({ "agents_context": paths })),
     )?;
     lock.message_ids.push(msg.id.clone());

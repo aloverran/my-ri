@@ -1,7 +1,7 @@
 //! Agent loop: call LLM, execute tools, persist messages, repeat.
 //!
 //! This is application-level composition of ri primitives (Turn, Tool,
-//! SessionStore). It returns a stream of AgentEvents so the caller can
+//! Store). It returns a stream of AgentEvents so the caller can
 //! drive display, logging, or RPC output with plain iteration.
 
 use std::collections::{HashMap, HashSet};
@@ -11,7 +11,7 @@ use async_stream::stream;
 use futures::Stream;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, SessionStore,
+    ContentBlock, LlmProvider, Message, MessageId, Model, RequestOptions, Role, SessionId, Store,
     StreamEvent, ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
@@ -44,11 +44,11 @@ pub fn submit<'a>(
     provider: &'a dyn LlmProvider,
     model: &'a Model,
     tools: &'a [Box<dyn Tool>],
-    store: &'a mut SessionStore,
-    message_ids: &'a mut Vec<String>,
+    store: &'a mut Store,
+    message_ids: &'a mut Vec<MessageId>,
     cwd: &'a Path,
     thinking: ThinkingLevel,
-    session_id: &'a str,
+    session_id: &'a SessionId,
     seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> eyre::Result<impl Stream<Item = AgentEvent> + 'a> {
@@ -56,7 +56,6 @@ pub fn submit<'a>(
         session_id,
         Role::User,
         vec![ContentBlock::text(text)],
-        None,
         None,
     )?;
     message_ids.push(user_msg.id);
@@ -88,12 +87,12 @@ pub fn run<'a>(
     provider: &'a dyn LlmProvider,
     model: &'a Model,
     tools: &'a [Box<dyn Tool>],
-    store: &'a mut SessionStore,
-    message_ids: &'a mut Vec<String>,
+    store: &'a mut Store,
+    message_ids: &'a mut Vec<MessageId>,
     cwd: &'a Path,
     thinking: ThinkingLevel,
     max_tokens: Option<usize>,
-    session_id: &'a str,
+    session_id: &'a SessionId,
     seen_agents: &'a mut HashSet<PathBuf>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> impl Stream<Item = AgentEvent> + 'a {
@@ -108,8 +107,8 @@ pub fn run<'a>(
         loop {
             if cancel.is_cancelled() { break; }
 
-            let input_ids: Vec<String> = message_ids.clone();
-            let messages: Vec<Message> = store.pool.resolve_existing(&input_ids)
+            let input_ids: Vec<MessageId> = message_ids.clone();
+            let messages: Vec<Message> = store.pool.resolve(&input_ids)
                 .into_iter()
                 .cloned()
                 .collect();
@@ -132,13 +131,10 @@ pub fn run<'a>(
                     let assistant_msg = store.write_message(session_id,
                         Role::Assistant,
                         vec![ContentBlock::error(msg_text)],
-                        Some(Provenance {
-                            input: input_ids,
-                            model: model.id.clone(),
-                            ts: chrono::Utc::now().to_rfc3339(),
-                            usage: None,
-                        }),
-                        None,
+                        Some(serde_json::json!({
+                            "model": model.id,
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                        })),
                     );
                     match assistant_msg {
                         Ok(msg) => {
@@ -174,13 +170,11 @@ pub fn run<'a>(
             let assistant_msg = match store.write_message(session_id,
                 Role::Assistant,
                 content.clone(),
-                Some(Provenance {
-                    input: input_ids,
-                    model: model.id.clone(),
-                    ts: chrono::Utc::now().to_rfc3339(),
-                    usage,
-                }),
-                None,
+                Some(serde_json::json!({
+                    "model": model.id,
+                    "ts": chrono::Utc::now().to_rfc3339(),
+                    "usage": usage,
+                })),
             ) {
                 Ok(msg) => msg,
                 Err(e) => {
@@ -218,7 +212,7 @@ pub fn run<'a>(
                     Some(tool) => {
                         let ctx = ToolContext {
                             cwd: cwd.to_path_buf(),
-                            session_id: Some(session_id.to_string()),
+                            session_id: Some(session_id.clone()),
                         };
                         tool.run(call_input.clone(), ctx, cancel.clone()).await
                     }
@@ -241,7 +235,7 @@ pub fn run<'a>(
 
             // Persist tool results.
             let tool_msg = match store.write_message(session_id,
-                Role::User, results, None, None,
+                Role::User, results, None,
             ) {
                 Ok(msg) => msg,
                 Err(e) => {
@@ -252,14 +246,19 @@ pub fn run<'a>(
             message_ids.push(tool_msg.id.clone());
             yield AgentEvent::MessageComplete(tool_msg);
         }
+
+        // Persist the final context as a step so the session can be reloaded from disk.
+        if let Err(e) = store.checkpoint(session_id, message_ids, None) {
+            yield AgentEvent::Error(format!("failed to checkpoint session: {}", e));
+        }
     }
 }
 
 /// Extract the system prompt text from the first System-role message.
-fn extract_system_prompt(store: &SessionStore, message_ids: &[String]) -> String {
+fn extract_system_prompt(store: &Store, message_ids: &[MessageId]) -> String {
     store
         .pool
-        .resolve_existing(message_ids)
+        .resolve(message_ids)
         .iter()
         .find(|m| m.role == Role::System)
         .and_then(|m| {

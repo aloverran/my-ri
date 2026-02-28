@@ -55,15 +55,15 @@ pub enum LoginStatus {
 
 /// Per-session state. Behind Arc<Mutex<>> in the sessions map.
 pub struct SessionState {
-    pub store: ri::SessionStore,
-    pub message_ids: Vec<String>,
+    pub store: ri::Store,
+    pub message_ids: Vec<ri::MessageId>,
     pub cwd: PathBuf,
     pub name: String,
     pub ts: String,
     /// File-stem ID of this session (e.g. "2026-02-24_201128_my-task").
-    pub file_id: String,
+    pub file_id: ri::SessionId,
     /// File-stem ID of the parent session, if this session was spawned by another.
-    pub parent: Option<String>,
+    pub parent: Option<ri::SessionId>,
     /// Broadcast channel for SSE clients to subscribe to agent events.
     pub events_tx: broadcast::Sender<AgentEvent>,
     /// Active agent run handle. None when idle.

@@ -19,7 +19,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, Message, Role, SessionHeader, SessionStore, ThinkingLevel, Tool, ToolContext,
+    ContentBlock, Message, MessageId, Role, SessionHeader, SessionId, Store, ThinkingLevel, Tool, ToolContext,
     ToolOutput,
 };
 
@@ -112,10 +112,10 @@ impl Tool for RunAgentTool {
 
         // -- Parse inputs --
 
-        let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
+        let message_ids: Vec<MessageId> = match input.get("message_ids").and_then(|v| v.as_array()) {
             Some(arr) => arr
                 .iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().map(MessageId::from))
                 .collect(),
             None => return err("missing 'message_ids' parameter"),
         };
@@ -157,7 +157,7 @@ impl Tool for RunAgentTool {
 
         // -- Create or find session --
 
-        let parent = ctx.session_id.as_deref();
+        let parent = ctx.session_id.as_ref();
         let (session_arc, file_id) =
             match setup_session(&app, session_id, &message_ids, &ctx.cwd, parent).await {
                 Ok(v) => v,
@@ -173,7 +173,6 @@ impl Tool for RunAgentTool {
                 &sid,
                 Role::User,
                 vec![ContentBlock::text(text)],
-                None,
                 None,
             ) {
                 Ok(msg) => lock.message_ids.push(msg.id),
@@ -227,20 +226,20 @@ impl Tool for RunAgentTool {
 async fn setup_session(
     app: &AppState,
     session_id: Option<String>,
-    message_ids: &[String],
+    message_ids: &[MessageId],
     fallback_cwd: &PathBuf,
-    parent: Option<&str>,
-) -> eyre::Result<(Arc<Mutex<SessionState>>, String)> {
+    parent: Option<&SessionId>,
+) -> eyre::Result<(Arc<Mutex<SessionState>>, SessionId)> {
     // If a session_id was provided, try to find it in memory or on disk.
     if let Some(ref id) = session_id {
         let mut sessions = app.sessions.write().await;
-        if let Some(session) = sessions.get(id) {
+        if let Some(session) = sessions.get(id.as_str()) {
             let mut lock = session.lock().await;
             if lock.is_running() {
                 return Err(eyre::eyre!("session '{}' already has a running agent", id));
             }
             lock.message_ids = message_ids.to_vec();
-            return Ok((session.clone(), id.clone()));
+            return Ok((session.clone(), SessionId::from(id.as_str())));
         }
 
         // Try loading from disk.
@@ -251,8 +250,9 @@ async fn setup_session(
                 .cwd
                 .map(PathBuf::from)
                 .unwrap_or_else(|| fallback_cwd.clone());
-            let mut store = SessionStore::new(app.sessions_dir.clone());
+            let mut store = Store::new(app.sessions_dir.clone());
             store.load_all()?;
+            let sid = SessionId::from(id.as_str());
             let (events_tx, _) = broadcast::channel(256);
             let state = SessionState {
                 store,
@@ -260,14 +260,14 @@ async fn setup_session(
                 cwd: session_cwd,
                 name: header.session,
                 ts: header.ts,
-                file_id: id.clone(),
-                parent: header.parent,
+                file_id: sid.clone(),
+                parent: header.parent.map(SessionId::from),
                 events_tx,
                 current_run: None,
             };
             let arc = Arc::new(Mutex::new(state));
             sessions.insert(id.clone(), arc.clone());
-            return Ok((arc, id.clone()));
+            return Ok((arc, sid));
         }
 
         // Session not found -- fall through to creation with this name.
@@ -276,9 +276,9 @@ async fn setup_session(
     // Create a new session.
     let name = session_id.unwrap_or_else(|| ri::gen_id());
     let cwd_str = fallback_cwd.to_string_lossy().to_string();
-    let mut store = SessionStore::new(app.sessions_dir.clone());
+    let mut store = Store::new(app.sessions_dir.clone());
     store.load_all()?;
-    let file_id = store.create_session(&name, &cwd_str, parent, message_ids)?;
+    let file_id = store.create_session(&name, &cwd_str, parent)?;
 
     let ts = chrono::Utc::now().to_rfc3339();
     let (events_tx, _) = broadcast::channel(256);
@@ -289,7 +289,7 @@ async fn setup_session(
         name: name.clone(),
         ts,
         file_id: file_id.clone(),
-        parent: parent.map(str::to_string),
+        parent: parent.cloned(),
         events_tx,
         current_run: None,
     };
@@ -297,7 +297,7 @@ async fn setup_session(
     app.sessions
         .write()
         .await
-        .insert(file_id.clone(), arc.clone());
+        .insert(file_id.to_string(), arc.clone());
     Ok((arc, file_id))
 }
 
@@ -376,7 +376,7 @@ impl Tool for ReadSessionTool {
             let mut messages: Vec<Message> = lock
                 .store
                 .pool
-                .resolve_existing(&lock.message_ids)
+                .resolve(&lock.message_ids)
                 .into_iter()
                 .cloned()
                 .collect();
@@ -450,7 +450,7 @@ impl Tool for ReadMessageTool {
         let sessions = app.sessions.read().await;
         for (_sid, session) in sessions.iter() {
             let lock = session.lock().await;
-            if let Some(msg) = lock.store.pool.get(message_id) {
+            if let Some(msg) = lock.store.pool.get_message(message_id) {
                 let text = serde_json::to_string_pretty(msg).unwrap_or_default();
                 return ToolOutput {
                     text,
@@ -507,65 +507,46 @@ fn read_header(path: &std::path::Path) -> eyre::Result<SessionHeader> {
     Ok(serde_json::from_str(line.trim())?)
 }
 
-/// Read all messages from a session file, resolving initial_ids from the
-/// header by loading the full message pool from disk.
+/// Read all messages from a session file via the Store's pool.
 fn read_session_messages(
     path: &std::path::Path,
     sessions_dir: &std::path::Path,
 ) -> eyre::Result<Vec<Message>> {
-    let header = read_header(path)?;
+    let mut store = Store::new(sessions_dir.to_path_buf());
+    store.load_all()?;
 
-    // Collect initial_ids from header (cross-session references).
-    let initial_ids: Vec<String> = header
-        .extra
-        .get("initial_ids")
-        .and_then(|v: &serde_json::Value| v.as_array())
-        .map(|arr: &Vec<serde_json::Value>| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let file_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
 
-    // Read messages physically in this file.
+    // If the session has a head step, resolve its context.
+    if let Some(session) = store.get_session(file_id) {
+        if let Some(step) = store.pool.get_step(session.head.as_str()) {
+            return Ok(store.pool.resolve_context(&step.context)
+                .into_iter()
+                .cloned()
+                .collect());
+        }
+    }
+
+    // Fallback: parse message lines from the file and look them up in the pool.
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
-    let mut file_messages: Vec<Message> = Vec::new();
-    let mut first = true;
+    let mut messages = Vec::new();
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if first {
-            first = false;
-            if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
-                if obj.get("session").is_some() && obj.get("role").is_none() {
-                    continue;
+        if trimmed.is_empty() { continue; }
+        if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
+            if let Some(msg_id) = obj.get("msg").and_then(|v| v.as_str()) {
+                if let Some(msg) = store.pool.get_message(msg_id) {
+                    messages.push(msg.clone());
                 }
             }
         }
-        if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
-            file_messages.push(msg);
-        }
     }
-
-    // If there are no initial_ids, just return the file messages.
-    if initial_ids.is_empty() {
-        return Ok(file_messages);
-    }
-
-    // Load the full pool to resolve initial_ids.
-    let mut store = SessionStore::new(sessions_dir.to_path_buf());
-    store.load_all()?;
-
-    let mut result: Vec<Message> = initial_ids
-        .iter()
-        .filter_map(|id| store.pool.get(id).cloned())
-        .collect();
-    result.extend(file_messages);
-    Ok(result)
+    Ok(messages)
 }
 
 /// Format messages for the readSession tool output.
@@ -597,34 +578,9 @@ fn format_session_output(
     }
 }
 
-/// Search all JSONL files in sessions_dir for a message with the given ID.
+/// Search all session files for a message with the given ID.
 fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Option<Message> {
-    let entries = std::fs::read_dir(sessions_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let reader = BufReader::new(file);
-        for line in reader.lines().flatten() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Quick check before full parse.
-            if !trimmed.contains(message_id) {
-                continue;
-            }
-            if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
-                if msg.id == message_id {
-                    return Some(msg);
-                }
-            }
-        }
-    }
-    None
+    let mut store = Store::new(sessions_dir.to_path_buf());
+    store.load_all().ok()?;
+    store.pool.get_message(message_id).cloned()
 }

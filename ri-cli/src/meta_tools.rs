@@ -6,7 +6,7 @@
 //! - `readMessage`: inspect a single message with provenance
 //!
 //! In the CLI, these tools own all the state they need (sessions_dir)
-//! and create fresh SessionStores when reading. runAgent spawns a fully
+//! and create fresh Stores when reading. runAgent spawns a fully
 //! self-contained background task.
 
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, Provenance, RequestOptions, Role, SessionStore,
+    ContentBlock, LlmProvider, Message, MessageId, Model, RequestOptions, Role, SessionId, Store,
     ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
@@ -100,10 +100,10 @@ impl Tool for RunAgentTool {
     async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
         // -- Parse inputs --
 
-        let message_ids: Vec<String> = match input.get("message_ids").and_then(|v| v.as_array()) {
+        let message_ids: Vec<MessageId> = match input.get("message_ids").and_then(|v| v.as_array()) {
             Some(arr) => arr
                 .iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().map(MessageId::from))
                 .collect(),
             None => return err("missing 'message_ids' parameter"),
         };
@@ -153,16 +153,16 @@ impl Tool for RunAgentTool {
         // -- Create session --
 
         let sessions_dir = self.sessions_dir.clone();
-        let mut store = SessionStore::new(sessions_dir.clone());
+        let mut store = Store::new(sessions_dir.clone());
         if let Err(e) = store.load_all() {
             return err(&format!("failed to load sessions: {}", e));
         }
 
         let name = session_id.unwrap_or_else(|| ri::gen_id());
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
-        let parent = ctx.session_id.as_deref();
+        let parent = ctx.session_id.as_ref();
         let mut msg_ids = message_ids;
-        let file_id = match store.create_session(&name, &cwd_str, parent, &msg_ids) {
+        let file_id = match store.create_session(&name, &cwd_str, parent) {
             Ok(v) => v,
             Err(e) => return err(&format!("failed to create session: {}", e)),
         };
@@ -174,7 +174,6 @@ impl Tool for RunAgentTool {
                 &file_id,
                 Role::User,
                 vec![ContentBlock::text(text)],
-                None,
                 None,
             ) {
                 Ok(msg) => msg_ids.push(msg.id),
@@ -219,17 +218,17 @@ impl Tool for RunAgentTool {
 async fn run_background_loop(
     provider: Box<dyn LlmProvider>,
     model: Model,
-    mut store: SessionStore,
-    mut message_ids: Vec<String>,
+    mut store: Store,
+    mut message_ids: Vec<MessageId>,
     cwd: PathBuf,
     thinking: ThinkingLevel,
     max_tokens: Option<usize>,
-    session_id: String,
+    session_id: SessionId,
 ) -> eyre::Result<()> {
     // Extract system prompt from the first System message.
     let system_prompt = store
         .pool
-        .resolve_existing(&message_ids)
+        .resolve(&message_ids)
         .iter()
         .find(|m| m.role == Role::System)
         .and_then(|m| {
@@ -253,10 +252,10 @@ async fn run_background_loop(
     let cancel = CancellationToken::new();
 
     loop {
-        let input_ids: Vec<String> = message_ids.clone();
+        let input_ids: Vec<MessageId> = message_ids.clone();
         let messages: Vec<Message> = store
             .pool
-            .resolve_existing(&input_ids)
+            .resolve(&input_ids)
             .into_iter()
             .cloned()
             .collect();
@@ -277,13 +276,10 @@ async fn run_background_loop(
                     &session_id,
                     Role::Assistant,
                     vec![ContentBlock::error(e.to_string())],
-                    Some(Provenance {
-                        input: input_ids,
-                        model: model.id.clone(),
-                        ts: chrono::Utc::now().to_rfc3339(),
-                        usage: None,
-                    }),
-                    None,
+                    Some(serde_json::json!({
+                        "model": model.id,
+                        "ts": chrono::Utc::now().to_rfc3339(),
+                    })),
                 )?;
                 message_ids.push(msg.id);
                 break;
@@ -303,13 +299,11 @@ async fn run_background_loop(
             &session_id,
             Role::Assistant,
             content.clone(),
-            Some(Provenance {
-                input: input_ids,
-                model: model.id.clone(),
-                ts: chrono::Utc::now().to_rfc3339(),
-                usage,
-            }),
-            None,
+            Some(serde_json::json!({
+                "model": model.id,
+                "ts": chrono::Utc::now().to_rfc3339(),
+                "usage": usage,
+            })),
         )?;
         message_ids.push(assistant_msg.id);
 
@@ -357,10 +351,11 @@ async fn run_background_loop(
             ));
         }
 
-        let tool_msg = store.write_message(&session_id, Role::User, results, None, None)?;
+        let tool_msg = store.write_message(&session_id, Role::User, results, None)?;
         message_ids.push(tool_msg.id);
     }
 
+    store.checkpoint(&session_id, &message_ids, None)?;
     Ok(())
 }
 
@@ -517,59 +512,49 @@ fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
     }
 }
 
-/// Read all messages from a session file, resolving initial_ids from the
-/// header by loading the full message pool from disk.
+/// Read all messages from a session file using the Store loader.
 fn read_session_messages(
     path: &std::path::Path,
     sessions_dir: &std::path::Path,
 ) -> eyre::Result<Vec<Message>> {
+    let mut store = Store::new(sessions_dir.to_path_buf());
+    store.load_all()?;
+
+    // Get the file_id from the path stem.
+    let file_id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // Collect all messages from the session's head context, or fall back
+    // to all messages in the pool if no head exists.
+    if let Some(session) = store.get_session(file_id) {
+        if let Some(step) = store.pool.get_step(session.head.as_str()) {
+            return Ok(store.pool.resolve_context(&step.context)
+                .into_iter()
+                .cloned()
+                .collect());
+        }
+    }
+
+    // Fallback: return all messages from the file in order.
+    // Parse the file manually for message lines.
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
-    let mut initial_ids: Vec<String> = Vec::new();
-    let mut file_messages: Vec<Message> = Vec::new();
-    let mut first = true;
-
+    let mut messages = Vec::new();
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if first {
-            first = false;
-            if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
-                if obj.get("session").is_some() && obj.get("role").is_none() {
-                    // Extract initial_ids from header.
-                    if let Some(arr) = obj.get("initial_ids").and_then(|v| v.as_array()) {
-                        initial_ids = arr
-                            .iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect();
-                    }
-                    continue;
+        if trimmed.is_empty() { continue; }
+        if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
+            if let Some(msg_id) = obj.get("msg").and_then(|v| v.as_str()) {
+                if let Some(msg) = store.pool.get_message(msg_id) {
+                    messages.push(msg.clone());
                 }
             }
         }
-
-        if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
-            file_messages.push(msg);
-        }
     }
-
-    if initial_ids.is_empty() {
-        return Ok(file_messages);
-    }
-
-    // Load the full pool to resolve initial_ids.
-    let mut store = SessionStore::new(sessions_dir.to_path_buf());
-    store.load_all()?;
-    let mut result: Vec<Message> = initial_ids
-        .iter()
-        .filter_map(|id| store.pool.get(id).cloned())
-        .collect();
-    result.extend(file_messages);
-    Ok(result)
+    Ok(messages)
 }
 
 fn format_session_output(
@@ -600,32 +585,7 @@ fn format_session_output(
 }
 
 fn find_message_on_disk(message_id: &str, sessions_dir: &std::path::Path) -> Option<Message> {
-    let entries = std::fs::read_dir(sessions_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let file = match std::fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        let reader = BufReader::new(file);
-        for line in reader.lines().flatten() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Quick check before full parse.
-            if !trimmed.contains(message_id) {
-                continue;
-            }
-            if let Ok(msg) = serde_json::from_str::<Message>(trimmed) {
-                if msg.id == message_id {
-                    return Some(msg);
-                }
-            }
-        }
-    }
-    None
+    let mut store = Store::new(sessions_dir.to_path_buf());
+    store.load_all().ok()?;
+    store.pool.get_message(message_id).cloned()
 }

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use ri::{Message, SessionHeader, SessionStore};
+use ri::{Message, MessageId, SessionHeader, SessionId, Store};
 
 use crate::agent::{self, AgentEvent};
 use crate::state::{AppState, LoginInProgress, LoginStatus, RunHandle, SessionState};
@@ -132,9 +132,9 @@ async fn create_session(
         )));
     }
 
-    let mut store = SessionStore::new(state.sessions_dir.clone());
+    let mut store = Store::new(state.sessions_dir.clone());
     store.load_all()?;
-    let id = store.create_session(&req.name, &req.cwd, None, &[])?;
+    let id = store.create_session(&req.name, &req.cwd, None)?;
 
     let ts = chrono::Utc::now().to_rfc3339();
 
@@ -162,7 +162,6 @@ async fn create_session(
         &id,
         ri::Role::System,
         vec![ri::ContentBlock::text(&system_prompt)],
-        None,
         if context_paths.is_empty() {
             None
         } else {
@@ -170,11 +169,14 @@ async fn create_session(
         },
     )?;
 
+    let message_ids = vec![sys_msg.id];
+    store.checkpoint(&id, &message_ids, None)?;
+
     let (events_tx, _) = broadcast::channel(256);
 
     let session_state = SessionState {
         store,
-        message_ids: vec![sys_msg.id],
+        message_ids,
         cwd,
         name: req.name.clone(),
         ts: ts.clone(),
@@ -188,12 +190,12 @@ async fn create_session(
         .sessions
         .write()
         .await
-        .insert(id.clone(), Arc::new(Mutex::new(session_state)));
+        .insert(id.to_string(), Arc::new(Mutex::new(session_state)));
 
     Ok((
         StatusCode::CREATED,
         Json(SessionSummary {
-            id,
+            id: id.to_string(),
             name: req.name,
             ts,
             cwd: req.cwd,
@@ -214,7 +216,7 @@ async fn get_session(
     let messages: Vec<Message> = lock
         .store
         .pool
-        .resolve_existing(&lock.message_ids)
+        .resolve(&lock.message_ids)
         .into_iter()
         .cloned()
         .collect();
@@ -224,7 +226,7 @@ async fn get_session(
         name: lock.name.clone(),
         ts: lock.ts.clone(),
         cwd: lock.cwd.to_string_lossy().to_string(),
-        parent: lock.parent.clone(),
+        parent: lock.parent.as_ref().map(|p| p.to_string()),
         status: lock.status().to_string(),
         messages,
     }))
@@ -850,10 +852,15 @@ async fn get_or_load_session(
     let header = read_session_header(&path)?;
     let cwd = std::path::PathBuf::from(header.cwd.as_deref().unwrap_or("."));
 
-    let mut store = SessionStore::new(state.sessions_dir.clone());
+    let mut store = Store::new(state.sessions_dir.clone());
     store.load_all()?;
 
-    let message_ids = read_session_message_ids(&path)?;
+    // Prefer the head step's context (written by checkpoint), fall back to
+    // scanning msg lines for sessions that predate step/head tracking.
+    let message_ids: Vec<MessageId> = match store.head_context(id) {
+        Some(ctx) => ctx.messages.clone(),
+        None => read_session_message_ids(&path)?.into_iter().map(MessageId::from).collect(),
+    };
     let (events_tx, _) = broadcast::channel(256);
 
     let session_state = SessionState {
@@ -862,8 +869,8 @@ async fn get_or_load_session(
         cwd,
         name: header.session,
         ts: header.ts,
-        file_id: id.to_string(),
-        parent: header.parent,
+        file_id: SessionId::from(id),
+        parent: header.parent.map(SessionId::from),
         events_tx,
         current_run: None,
     };
@@ -897,7 +904,6 @@ fn read_session_message_ids(path: &std::path::Path) -> Result<Vec<String>, AppEr
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     let mut ids = Vec::new();
-    let mut first = true;
 
     for line in std::io::BufRead::lines(reader) {
         let line = line?;
@@ -906,18 +912,8 @@ fn read_session_message_ids(path: &std::path::Path) -> Result<Vec<String>, AppEr
             continue;
         }
 
-        if first {
-            first = false;
-            // Skip header line (has "session" key).
-            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if obj.get("session").is_some() && obj.get("role").is_none() {
-                    continue;
-                }
-            }
-        }
-
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(id) = obj.get("msg").and_then(|v| v.as_str()) {
                 ids.push(id.to_string());
             }
         }

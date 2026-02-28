@@ -5,7 +5,7 @@
 //! The viewport only handles live concerns: streaming preview, input, and status.
 
 use crate::agent::{self, AgentEvent};
-use ri::{AuthMethod, LlmProvider, Model, SessionStore, StreamEvent, ThinkingLevel, Tool, Usage};
+use ri::{AuthMethod, LlmProvider, MessageId, Model, SessionId, Store, StreamEvent, ThinkingLevel, Tool, Usage};
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -658,10 +658,10 @@ pub async fn run(
     let cwd_str = cwd
         .to_str()
         .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
-    let sessions_dir = SessionStore::default_dir()?;
-    let mut store = SessionStore::new(sessions_dir);
+    let sessions_dir = Store::default_dir()?;
+    let mut store = Store::new(sessions_dir);
     store.load_all()?;
-    let file_id = store.create_session(&session_name, cwd_str, None, &[])?;
+    let file_id = store.create_session(&session_name, cwd_str, None)?;
     let system_prompt = {
         let context_files = ri_tools::resources::discover_context_files(&cwd);
         let mut parts = vec![
@@ -679,9 +679,9 @@ pub async fn run(
         ri::Role::System,
         vec![ri::ContentBlock::text(&system_prompt)],
         None,
-        None,
     )?;
     let mut message_ids = vec![sys_msg.id];
+    store.checkpoint(&file_id, &message_ids, None)?;
 
     let mut tui = Tui::new(model.name.clone())?;
     let mut events = EventStream::new();
@@ -768,11 +768,11 @@ async fn run_prompt(
     provider: &dyn LlmProvider,
     model: &Model,
     tools: &[Box<dyn Tool>],
-    store: &mut SessionStore,
-    message_ids: &mut Vec<String>,
+    store: &mut Store,
+    message_ids: &mut Vec<MessageId>,
     cwd: &PathBuf,
     thinking: ThinkingLevel,
-    session_id: &str,
+    session_id: &SessionId,
     seen_agents: &mut std::collections::HashSet<PathBuf>,
     term_events: &mut EventStream,
 ) -> eyre::Result<()> {

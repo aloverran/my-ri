@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
         .map(|t| Arc::from(t))
         .collect();
 
-    let sessions_dir = ri::SessionStore::default_dir()?;
+    let sessions_dir = ri::Store::default_dir()?;
 
     let app_state = Arc::new_cyclic(|weak| {
         let meta = meta_tools::create(weak.clone());
