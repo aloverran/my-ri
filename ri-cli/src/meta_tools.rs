@@ -343,7 +343,7 @@ async fn run_background_loop(
                     details: None,
                 },
             };
-            results.push(ContentBlock::tool_result_with_details(
+            results.push(ContentBlock::tool_result_text(
                 call_id,
                 &output.text,
                 output.is_error,

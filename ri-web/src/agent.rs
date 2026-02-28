@@ -270,7 +270,7 @@ pub(crate) async fn run_loop(
         let mut results: Vec<ContentBlock> = Vec::new();
         for (call_id, call_name, call_input) in &calls {
             if cancel.is_cancelled() {
-                results.push(ContentBlock::tool_result_with_details(
+                results.push(ContentBlock::tool_result_text(
                     call_id,
                     "Cancelled",
                     true,
@@ -306,7 +306,7 @@ pub(crate) async fn run_loop(
                 details: output.details.clone(),
             });
 
-            results.push(ContentBlock::tool_result_with_details(
+            results.push(ContentBlock::tool_result_text(
                 call_id,
                 &output.text,
                 output.is_error,

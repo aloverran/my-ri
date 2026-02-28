@@ -200,7 +200,7 @@ pub fn run<'a>(
             let mut results: Vec<ContentBlock> = Vec::new();
             for (call_id, call_name, call_input) in &calls {
                 if cancel.is_cancelled() {
-                    results.push(ContentBlock::tool_result_with_details(call_id, "Cancelled", true, None));
+                    results.push(ContentBlock::tool_result_text(call_id, "Cancelled", true, None));
                     continue;
                 }
 
@@ -230,7 +230,7 @@ pub fn run<'a>(
                     details: output.details.clone(),
                 };
 
-                results.push(ContentBlock::tool_result_with_details(call_id, &output.text, output.is_error, output.details));
+                results.push(ContentBlock::tool_result_text(call_id, &output.text, output.is_error, output.details));
             }
 
             // Persist tool results.
