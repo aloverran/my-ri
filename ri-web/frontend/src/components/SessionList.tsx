@@ -11,7 +11,6 @@ interface SessionListProps {
 
 export default function SessionList(props: SessionListProps) {
   const [allSessions, { refetch }] = createResource<SessionSummary[]>(getSessions);
-  const [name, setName] = createSignal('');
   const [cwd, setCwd] = createSignal('/Users/john/Projects/ri');
   const [creating, setCreating] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
@@ -32,14 +31,12 @@ export default function SessionList(props: SessionListProps) {
 
   const handleCreate = async (e: Event) => {
     e.preventDefault();
-    const n = name().trim();
     const c = cwd().trim();
-    if (!n || !c) return;
+    if (!c) return;
 
     setCreating(true);
     try {
-      const result = await createSession(n, c);
-      setName('');
+      const result = await createSession(c);
       refetch();
       props.onSelect(result.id);
     } catch (err) {
@@ -73,13 +70,6 @@ export default function SessionList(props: SessionListProps) {
       <form class="new-session-form" onSubmit={handleCreate}>
         <input
           type="text"
-          placeholder="Session name"
-          value={name()}
-          onInput={(e) => setName(e.currentTarget.value)}
-          disabled={creating()}
-        />
-        <input
-          type="text"
           placeholder="Working directory"
           value={cwd()}
           onInput={(e) => setCwd(e.currentTarget.value)}
@@ -88,7 +78,7 @@ export default function SessionList(props: SessionListProps) {
         <button
           type="submit"
           class="primary"
-          disabled={creating() || !name().trim() || !cwd().trim()}
+          disabled={creating() || !cwd().trim()}
         >New</button>
       </form>
 

@@ -68,6 +68,10 @@ pub struct SessionState {
     pub events_tx: broadcast::Sender<AgentEvent>,
     /// Active agent run handle. None when idle.
     pub current_run: Option<RunHandle>,
+    /// Monotonic counter for background title generation. Each new title
+    /// task captures the current value; when it finishes, it only applies
+    /// the result if the counter hasn't advanced (preventing stale overwrites).
+    pub title_gen_seq: u64,
 }
 
 /// Handle to a running agent loop. One per run, not reused.

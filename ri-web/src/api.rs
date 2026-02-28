@@ -41,7 +41,6 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 #[derive(Deserialize)]
 struct CreateSessionRequest {
-    name: String,
     cwd: String,
 }
 
@@ -132,9 +131,10 @@ async fn create_session(
         )));
     }
 
+    let name = "New session";
     let mut store = Store::new(state.sessions_dir.clone());
     store.load_all()?;
-    let id = store.create_session(&req.name, &req.cwd, None)?;
+    let id = store.create_session(name, &req.cwd, None)?;
 
     let ts = chrono::Utc::now().to_rfc3339();
 
@@ -178,12 +178,13 @@ async fn create_session(
         store,
         message_ids,
         cwd,
-        name: req.name.clone(),
+        name: name.to_string(),
         ts: ts.clone(),
         file_id: id.clone(),
         parent: None,
         events_tx,
         current_run: None,
+        title_gen_seq: 0,
     };
 
     state
@@ -196,7 +197,7 @@ async fn create_session(
         StatusCode::CREATED,
         Json(SessionSummary {
             id: id.to_string(),
-            name: req.name,
+            name: name.to_string(),
             ts,
             cwd: req.cwd,
             parent: None,
@@ -769,6 +770,10 @@ fn agent_event_to_sse(event: &AgentEvent) -> Option<Event> {
             let data = serde_json::to_string(msg).unwrap_or_default();
             Some(Event::default().event("message_complete").data(data))
         }
+        AgentEvent::TitleUpdate(title) => {
+            let data = serde_json::json!({ "title": title });
+            Some(Event::default().event("title_update").data(data.to_string()))
+        }
         AgentEvent::Error(msg) => {
             let data = serde_json::json!({ "message": msg });
             Some(Event::default().event("agent_error").data(data.to_string()))
@@ -873,6 +878,7 @@ async fn get_or_load_session(
         parent: header.parent.map(SessionId::from),
         events_tx,
         current_run: None,
+        title_gen_seq: 0,
     };
 
     let session = Arc::new(Mutex::new(session_state));

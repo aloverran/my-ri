@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, LlmProvider, Message, Model, RequestOptions, Role, StreamEvent,
+    ContentBlock, LlmProvider, Message, MessageId, Model, RequestOptions, Role, StreamEvent,
     ThinkingLevel, Tool, ToolContext, ToolOutput, ToolSchema,
 };
 use ri_ai::Turn;
@@ -34,6 +34,8 @@ pub enum AgentEvent {
         details: Option<serde_json::Value>,
     },
     MessageComplete(Message),
+    /// Auto-generated title update from background title generation.
+    TitleUpdate(String),
     Error(String),
     Done,
 }
@@ -108,6 +110,9 @@ async fn run_agent_loop(
         lock.message_ids.push(user_msg.id.clone());
         let _ = lock.events_tx.send(AgentEvent::MessageComplete(user_msg));
     }
+
+    // Kick off title generation with the new user message context.
+    spawn_title_generation(session.clone());
 
     run_loop(session, provider, model, tools, thinking, None, cancel).await
 }
@@ -242,6 +247,13 @@ pub(crate) async fn run_loop(
             msg
         };
         let _ = tx.send(AgentEvent::MessageComplete(assistant_msg.clone()));
+
+        // Trigger title generation if this assistant message has text content
+        // (not purely tool calls). Runs in background, won't block the loop.
+        let has_text = content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+        if has_text {
+            spawn_title_generation(session.clone());
+        }
 
         // Extract tool calls.
         let calls: Vec<(String, String, serde_json::Value)> = content
@@ -438,4 +450,181 @@ async fn inject_discovered_agents(
     drop(lock);
     let _ = tx.send(AgentEvent::MessageComplete(msg));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Background title generation
+// ---------------------------------------------------------------------------
+
+const TITLE_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+
+const TITLE_SYSTEM_PROMPT: &str = "\
+You generate short titles for coding agent sessions. You are part of a tool \
+called 'ri' -- a terminal-based coding agent that helps engineers with \
+software tasks: fixing bugs, adding features, refactoring, exploring codebases.
+
+Given a conversation between a user and the coding agent, produce a short \
+title (3-7 words) that captures the specific topic or task. Titles should \
+read like short descriptions of what is being worked on, in sentence form \
+(e.g. 'Fix login redirect loop', 'Add dark mode toggle', 'Refactor auth middleware').
+
+Rules:
+- Output ONLY the title text, nothing else.
+- If there is not yet enough information to generate a meaningful title \
+  (e.g. the conversation just started, or the user's intent is unclear), \
+  output exactly the word DEFER.
+- Focus on the specific technical task, not generic descriptions.
+- Do not use quotes, colons, or prefixes like 'Title:'.
+- Use sentence case.";
+
+/// Spawn a background task that generates a title for the session from its
+/// current messages. The task resolves a cheap model, builds a condensed
+/// view of the conversation, and calls the LLM. If it gets a non-DEFER
+/// response, it updates the session name, persists the title, and
+/// broadcasts a title_update SSE event.
+///
+/// Safe to call frequently: each call increments title_gen_seq so only
+/// the latest task's result is applied.
+fn spawn_title_generation(session: Arc<Mutex<SessionState>>) {
+    tokio::spawn(async move {
+        if let Err(e) = generate_title(session).await {
+            tracing::debug!("Title generation skipped: {}", e);
+        }
+    });
+}
+
+async fn generate_title(session: Arc<Mutex<SessionState>>) -> eyre::Result<()> {
+    // Snapshot the messages under lock, but defer the seq increment until we
+    // know there's actually content to title. This prevents an empty-context
+    // call from bumping the counter and silently discarding a valid in-flight task.
+    let (seq, title_messages, session_id, tx) = {
+        let mut lock = session.lock().await;
+        let messages = build_title_context(&lock.store.pool.resolve(&lock.message_ids));
+        if messages.is_empty() {
+            return Ok(());
+        }
+        lock.title_gen_seq += 1;
+        let seq = lock.title_gen_seq;
+        (seq, messages, lock.file_id.clone(), lock.events_tx.clone())
+    };
+
+    // Resolve the title model. If the provider isn't authenticated, bail quietly.
+    let (provider, model) = ri_ai::registry::resolve(TITLE_MODEL_ID).await?;
+
+    let opts = RequestOptions {
+        model,
+        system_prompt: TITLE_SYSTEM_PROMPT.to_string(),
+        messages: title_messages,
+        tools: Vec::new(),
+        thinking: ThinkingLevel::Off,
+        max_tokens: Some(80),
+    };
+
+    // Run the LLM call and collect the response text.
+    let mut turn = Turn::start(provider.as_ref(), opts).await?;
+    while let Some(result) = turn.next().await {
+        result?; // Consume events, propagate errors.
+    }
+    let (content, _usage) = turn.finish();
+
+    let response_text: String = content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.trim().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Collapse whitespace (newlines, double spaces) into clean single-line title.
+    let title: String = response_text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // DEFER or empty: nothing to do.
+    if title.is_empty() || title.eq_ignore_ascii_case("DEFER") {
+        tracing::debug!("Title generation deferred for session [{}]", session_id);
+        return Ok(());
+    }
+
+    // Apply the title only if our sequence is still current (no newer task
+    // has been spawned since we started).
+    let mut lock = session.lock().await;
+    if lock.title_gen_seq != seq {
+        tracing::debug!("Title generation for [{}] superseded (seq {} vs {})",
+            session_id, seq, lock.title_gen_seq);
+        return Ok(());
+    }
+
+    lock.name = title.clone();
+    lock.store.write_title(&session_id, &title)?;
+    let _ = tx.send(AgentEvent::TitleUpdate(title.clone()));
+
+    tracing::info!("Generated title [{}] for session [{}]", title, session_id);
+    Ok(())
+}
+
+/// Build a single-message context for title generation. Extracts user and
+/// assistant text content, formats it as a labelled transcript, and wraps
+/// it in one user message. This avoids three problems with sending the
+/// original multi-turn conversation: OAuth system-prompt injection causing
+/// identity confusion, assistant-last messages triggering prefill, and
+/// tool-message filtering creating consecutive same-role messages.
+fn build_title_context(messages: &[&Message]) -> Vec<Message> {
+    // Extract (role_label, text) pairs from messages with text content.
+    let mut entries: Vec<(&str, String)> = Vec::new();
+    for msg in messages {
+        let label = match msg.role {
+            Role::System => continue,
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        };
+        for block in &msg.content {
+            if let ContentBlock::Text { text } = block {
+                let trimmed = text.trim();
+                if trimmed.is_empty() { continue; }
+                let truncated = if trimmed.len() > 600 {
+                    let end = trimmed.floor_char_boundary(600);
+                    format!("{}...", &trimmed[..end])
+                } else {
+                    trimmed.to_string()
+                };
+                entries.push((label, truncated));
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    // Keep the first entry (usually the user's initial question) plus
+    // recent entries from the end, capped at ~4000 chars total.
+    let max_chars = 4000;
+    let mut selected = vec![&entries[0]];
+    let mut total_chars = entries[0].1.len();
+
+    if entries.len() > 1 {
+        let mut tail: Vec<&(&str, String)> = Vec::new();
+        for entry in entries[1..].iter().rev() {
+            if total_chars + entry.1.len() > max_chars { break; }
+            total_chars += entry.1.len();
+            tail.push(entry);
+        }
+        tail.reverse();
+        selected.extend(tail);
+    }
+
+    // Format as a labelled transcript inside a single user message.
+    let transcript: String = selected.iter()
+        .map(|(label, text)| format!("[{}]: {}", label, text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    vec![Message {
+        id: MessageId::new("title_ctx"),
+        role: Role::User,
+        content: vec![ContentBlock::text(format!(
+            "Generate a title for this conversation:\n\n{}", transcript
+        ))],
+        meta: None,
+    }]
 }

@@ -264,6 +264,7 @@ async fn setup_session(
                 parent: header.parent.map(SessionId::from),
                 events_tx,
                 current_run: None,
+                title_gen_seq: 0,
             };
             let arc = Arc::new(Mutex::new(state));
             sessions.insert(id.clone(), arc.clone());
@@ -292,6 +293,7 @@ async fn setup_session(
         parent: parent.cloned(),
         events_tx,
         current_run: None,
+        title_gen_seq: 0,
     };
     let arc = Arc::new(Mutex::new(state));
     app.sessions

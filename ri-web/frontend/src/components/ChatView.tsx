@@ -203,6 +203,7 @@ export default function ChatView(props: ChatViewProps) {
           scrollIfFollowing();
         },
         usage: (data) => { setUsage(data); },
+        title_update: (data) => { setStore('name', data.title); },
         done: () => {
           setIsStreaming(false);
           setStore('status', 'idle');

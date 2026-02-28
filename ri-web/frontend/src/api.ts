@@ -29,8 +29,8 @@ export function getSession(id: string): Promise<SessionDetail> {
   return apiRequest<SessionDetail>('GET', `/sessions/${id}`);
 }
 
-export function createSession(name: string, cwd: string): Promise<{ id: string }> {
-  return apiRequest<{ id: string }>('POST', '/sessions', { name, cwd });
+export function createSession(cwd: string): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>('POST', '/sessions', { cwd });
 }
 
 export function deleteSession(id: string): Promise<void> {
@@ -124,6 +124,7 @@ export interface SSEHandlers {
   tool_start?: (data: { id: string; name: string }) => void;
   tool_end?: (data: { id: string; output: string; is_error: boolean; details?: Record<string, unknown> }) => void;
   message_complete?: (data: Message) => void;
+  title_update?: (data: { title: string }) => void;
   usage?: (data: Usage) => void;
   done?: () => void;
   agent_error?: (data: { message: string }) => void;
