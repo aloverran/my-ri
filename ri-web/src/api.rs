@@ -173,6 +173,14 @@ async fn create_session(
                 format!("Working directory: {}", cwd.display()),
             ])),
             ri_tools::resources::format_context_files(&context_files),
+            "# Ri Harness\n\nYou are being invoked from ri-web, a harness of ri exposed via a \
+            web interface. All output is rendered with marked and will render HTML directly. ri-web \
+            can be exposed over the internet so you may be interacting with a remote operator to \
+            the computer you're executing on.\n\n \
+            Your response is a step in the ri DAG right now, and the session pointer of the current \
+            session will be updated when you finish.\n\n \
+            In ri-web, agents loops run in parallel on top of tokio, so you may be one of many running \
+            right now.".to_string(),
         ];
         parts.retain(|p| !p.is_empty());
         parts.join("\n\n")
