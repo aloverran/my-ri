@@ -524,8 +524,8 @@ fn read_session_messages(
 
     // If the session has a head step, resolve its context.
     if let Some(session) = store.get_session(file_id) {
-        if let Some(step) = store.pool.get_step(session.head.as_str()) {
-            return Ok(store.pool.resolve_context(&step.context)
+        if let Some(ctx) = store.pool.get_context(session.head.as_str()) {
+            return Ok(store.pool.resolve_context(ctx)
                 .into_iter()
                 .cloned()
                 .collect());

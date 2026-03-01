@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use ri::{Message, MessageId, SessionHeader, SessionId, Store};
 
 use crate::agent::{self, AgentEvent};
-use crate::state::{AppState, LoginInProgress, LoginStatus, RunHandle, SessionState};
+use crate::state::{AppState, GlobalEvent, LoginInProgress, LoginStatus, RunHandle, SessionState};
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -29,6 +29,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/models", get(list_models))
         .route("/settings", get(get_settings))
         .route("/logs", get(log_events))
+        .route("/events", get(global_events))
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(auth_login))
         .route("/auth/complete", post(auth_complete))
@@ -338,6 +339,7 @@ async fn send_message(
         state.tools.clone(),
         thinking,
         cancel.clone(),
+        state.global_tx.clone(),
     );
 
     lock.current_run = Some(RunHandle { cancel, task });
@@ -405,6 +407,37 @@ async fn log_events(
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::debug!("log SSE client lagged, missed {} entries", n);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// SSE endpoint: global app-wide events (session completions, etc).
+/// The frontend uses this to fire desktop notifications when any session
+/// finishes, without needing a per-session SSE connection for each one.
+async fn global_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.global_tx.subscribe();
+
+    let stream = async_stream::stream! {
+        let mut rx = rx;
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Ok(data) = serde_json::to_string(&event) {
+                        let event_name = match &event {
+                            GlobalEvent::SessionDone { .. } => "session_done",
+                        };
+                        yield Ok(Event::default().event(event_name).data(data));
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!("global SSE client lagged, missed {} events", n);
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }

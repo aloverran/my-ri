@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
     // full history since boot (50k cap) so new SSE clients see everything.
     let (log_tx, _) = tokio::sync::broadcast::channel(1024);
     let log_buffer = Arc::new(LogBuffer::new(50_000));
+    let (global_tx, _) = tokio::sync::broadcast::channel(64);
 
     tracing_subscriber::registry()
         .with(
@@ -91,6 +92,7 @@ async fn main() -> Result<()> {
             logins: RwLock::new(std::collections::HashMap::new()),
             log_tx: log_tx.clone(),
             log_buffer: log_buffer.clone(),
+            global_tx: global_tx.clone(),
         }
     });
 

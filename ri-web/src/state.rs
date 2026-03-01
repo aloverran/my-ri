@@ -9,6 +9,23 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::AgentEvent;
 use crate::tracing_broadcast::{LogBuffer, LogEntry};
 
+/// App-wide events broadcast to all connected clients (not per-session).
+/// Used for global UI concerns like desktop notifications.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum GlobalEvent {
+    /// An agent loop finished and the session is now idle, awaiting input.
+    #[serde(rename = "session_done")]
+    SessionDone {
+        session_id: String,
+        name: String,
+        /// Short preview of the final assistant message text, if any.
+        preview: Option<String>,
+        /// Non-null for sub-agent sessions spawned by runAgent.
+        parent: Option<String>,
+    },
+}
+
 /// Top-level server state, shared across all handlers via Arc.
 pub struct AppState {
     /// All tools available to the primary agent (base + meta).
@@ -31,6 +48,8 @@ pub struct AppState {
     /// Ring buffer of all log entries since boot (capped). Snapshotted
     /// when a new SSE client connects so it sees full history.
     pub log_buffer: Arc<LogBuffer>,
+    /// Global event broadcast for app-wide notifications (session done, etc).
+    pub global_tx: broadcast::Sender<GlobalEvent>,
 }
 
 /// An OAuth login flow in progress. The provider instance must be kept alive

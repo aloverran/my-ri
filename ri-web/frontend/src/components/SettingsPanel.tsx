@@ -26,6 +26,32 @@ interface SettingsPanelProps {
 export default function SettingsPanel(props: SettingsPanelProps) {
   const [providers, { refetch }] = createResource(getAuthStatus);
 
+  // -- Notification toggle --
+  // Stored in localStorage so it persists across reloads. Clicking the toggle
+  // is a user gesture, which browsers require for Notification.requestPermission().
+  const NOTIFY_KEY = 'ri-notifications';
+  const [notifyEnabled, setNotifyEnabled] = createSignal(localStorage.getItem(NOTIFY_KEY) === 'on');
+  // Browser denied permission at the OS/browser level -- show a hint.
+  const notifyBlocked = () => 'Notification' in window && Notification.permission === 'denied';
+
+  const toggleNotifications = async () => {
+    if (notifyEnabled()) {
+      // Turn off.
+      localStorage.setItem(NOTIFY_KEY, 'off');
+      setNotifyEnabled(false);
+    } else {
+      // Turn on: request browser permission (only works from user gesture).
+      if ('Notification' in window && Notification.permission === 'default') {
+        const result = await Notification.requestPermission();
+        if (result !== 'granted') return; // User declined or dismissed.
+      }
+      if ('Notification' in window && Notification.permission === 'granted') {
+        localStorage.setItem(NOTIFY_KEY, 'on');
+        setNotifyEnabled(true);
+      }
+    }
+  };
+
   // Per-provider login state, keyed by provider id.
   const [loginStates, setLoginStates] = createSignal<Record<string, LoginState>>({});
 
@@ -145,6 +171,24 @@ export default function SettingsPanel(props: SettingsPanelProps) {
             />
           )}
         </For>
+      </div>
+
+      {/* Notification toggle */}
+      <div class="settings-section">
+        <div class="settings-section-label">Notifications</div>
+        <div class="notify-row">
+          <span class="notify-label">Notify when agent finishes</span>
+          <Show when={notifyBlocked()}
+            fallback={
+              <button
+                class={`notify-toggle ${notifyEnabled() ? 'notify-on' : ''}`}
+                onclick={toggleNotifications}
+              >{notifyEnabled() ? 'on' : 'off'}</button>
+            }
+          >
+            <span class="notify-blocked">blocked by browser</span>
+          </Show>
+        </div>
       </div>
     </div>
   );

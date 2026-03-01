@@ -179,3 +179,23 @@ export function connectLogSSE(onEntry: (entry: LogEntry) => void): EventSource {
   });
   return es;
 }
+
+// -- Global events SSE --
+
+/** Fired when any agent loop finishes and the session is now idle. */
+export interface SessionDoneEvent {
+  type: 'session_done';
+  session_id: string;
+  name: string;
+  preview: string | null;
+  parent: string | null;
+}
+
+/** Connect to the global app-wide event stream (session completions, etc). */
+export function connectGlobalSSE(onSessionDone: (event: SessionDoneEvent) => void): EventSource {
+  const es = new EventSource(apiUrl('/events'));
+  es.addEventListener('session_done', (e) => {
+    onSessionDone(JSON.parse((e as MessageEvent).data));
+  });
+  return es;
+}

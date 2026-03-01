@@ -17,7 +17,7 @@ use ri::{
 };
 use ri_ai::Turn;
 
-use crate::state::SessionState;
+use crate::state::{GlobalEvent, SessionState};
 
 /// Events broadcast to SSE clients during an agent run.
 #[derive(Debug, Clone)]
@@ -44,7 +44,8 @@ pub enum AgentEvent {
 ///
 /// The loop writes user message, runs LLM turns, executes tools, and
 /// broadcasts all events through the session's broadcast channel.
-/// When finished, it clears `current_run` in the SessionState.
+/// When finished, it clears `current_run` in the SessionState and
+/// emits a global SessionDone event for desktop notifications.
 pub fn spawn_agent_loop(
     session: Arc<Mutex<SessionState>>,
     user_text: String,
@@ -53,6 +54,7 @@ pub fn spawn_agent_loop(
     tools: Vec<Arc<dyn Tool>>,
     thinking: ThinkingLevel,
     cancel: CancellationToken,
+    global_tx: tokio::sync::broadcast::Sender<GlobalEvent>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let result = run_agent_loop(
@@ -73,8 +75,17 @@ pub fn spawn_agent_loop(
         }
 
         // Always clear current_run when the task exits.
+        // Also emit a global SessionDone so the frontend can fire a notification.
         let mut lock = session.lock().await;
         lock.current_run = None;
+
+        let preview = last_assistant_preview(&lock.store.pool.resolve(&lock.message_ids));
+        let _ = global_tx.send(GlobalEvent::SessionDone {
+            session_id: lock.file_id.to_string(),
+            name: lock.name.clone(),
+            preview,
+            parent: lock.parent.as_ref().map(|p| p.to_string()),
+        });
     })
 }
 
@@ -634,4 +645,35 @@ fn build_title_context(messages: &[&Message]) -> Vec<Message> {
         ))],
         meta: None,
     }]
+}
+
+/// Extract a short text preview from the last assistant message in a context.
+/// Returns None if the last assistant message has no text content (e.g. only tool calls).
+fn last_assistant_preview(messages: &[&Message]) -> Option<String> {
+    let msg = messages.iter().rev().find(|m| m.role == Role::Assistant)?;
+
+    let text: String = msg
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Truncate to ~100 chars at a word boundary for a clean notification body.
+    let max = 100;
+    if trimmed.len() <= max {
+        Some(trimmed.to_string())
+    } else {
+        let boundary = trimmed.floor_char_boundary(max);
+        let end = trimmed[..boundary].rfind(' ').unwrap_or(boundary);
+        Some(format!("{}...", &trimmed[..end]))
+    }
 }

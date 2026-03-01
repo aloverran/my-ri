@@ -529,8 +529,8 @@ fn read_session_messages(
     // Collect all messages from the session's head context, or fall back
     // to all messages in the pool if no head exists.
     if let Some(session) = store.get_session(file_id) {
-        if let Some(step) = store.pool.get_step(session.head.as_str()) {
-            return Ok(store.pool.resolve_context(&step.context)
+        if let Some(ctx) = store.pool.get_context(session.head.as_str()) {
+            return Ok(store.pool.resolve_context(ctx)
                 .into_iter()
                 .cloned()
                 .collect());
