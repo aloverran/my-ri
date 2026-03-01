@@ -533,6 +533,48 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-family: var(--font-mono);
 }
 
+/* Per-message usage badge: shows cache write count, expands on hover
+   to reveal full usage breakdown with a smooth width transition.
+   Detail slides open to the left of the compact number so the anchor
+   value stays visible throughout the animation -- no flash. */
+.msg-usage {
+  font-size: var(--size-xs);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  margin-left: auto;
+  padding-right: 4px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  cursor: default;
+}
+.msg-usage-compact {
+  flex-shrink: 0;
+}
+.msg-usage-detail {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width 0.3s ease, opacity 0.2s ease;
+}
+.msg-usage:hover .msg-usage-detail {
+  max-width: 300px;
+  opacity: 1;
+}
+.msg-usage-cw {
+  display: none;
+}
+.msg-usage:hover .msg-usage-cw {
+  display: inline;
+}
+.msg-usage-sep {
+  width: 10px;
+  flex-shrink: 0;
+}
+
 .streaming-label {
   font-size: var(--size-xs);
   color: var(--accent);

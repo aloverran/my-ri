@@ -430,6 +430,11 @@ export default function MessageView(props: MessageViewProps) {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Per-message usage, derived from meta. Only assistant messages carry this.
+  const usage = (): Usage | undefined =>
+    props.message.meta?.usage as Usage | undefined;
+  const cacheWrite = (): number => usage()?.cache_write_tokens ?? 0;
+
   if (props.message.role === 'system') {
     return <SystemMessage message={props.message} mode={props.mode} />;
   }
@@ -473,7 +478,7 @@ export default function MessageView(props: MessageViewProps) {
       {/* Normal rendering (hidden for tool-only and agents_context in compact) */}
       <Show when={!(isCompact() && (isToolOnlyUser() || agentsContext()))}>
         <div class="msg">
-        {/* Message header: role + timestamp + optional debug id */}
+        {/* Message header: role + timestamp + optional debug id + cache write */}
         <div class="msg-meta">
           <span class={`msg-role role-${displayRole()}`}>{displayRole()}</span>
           <Show when={timestamp()}>
@@ -481,6 +486,22 @@ export default function MessageView(props: MessageViewProps) {
           </Show>
           <Show when={props.mode === 'debug'}>
             <span class="msg-id">{props.message.id}</span>
+          </Show>
+          {/* Usage: cache write count, expands to full breakdown on hover */}
+          <Show when={cacheWrite() > 0}>
+            <span class="msg-usage">
+              <span class="msg-usage-detail">
+                {fmtTokens(usage()!.input_tokens)} in
+                <span class="msg-usage-sep" />
+                {fmtTokens(usage()!.output_tokens)} out
+                <Show when={usage()!.cache_read_tokens > 0}>
+                  <span class="msg-usage-sep" />
+                  {fmtTokens(usage()!.cache_read_tokens)} cr
+                </Show>
+                <span class="msg-usage-sep" />
+              </span>
+              <span class="msg-usage-compact">{fmtTokens(cacheWrite())}<span class="msg-usage-cw"> cw</span></span>
+            </span>
           </Show>
         </div>
 
