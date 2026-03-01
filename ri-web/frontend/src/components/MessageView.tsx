@@ -261,7 +261,11 @@ function CompactToolCall(props: {
           ? <span class="compact-tool-preview compact-tool-highlighted" innerHTML={highlightInline(truncate((props.input as any).command, 120), 'bash')} />
           : <span class="compact-tool-preview">{preview()}</span>
         }
-        <Show when={bashTimeout()}>
+        {/* Bash status: checkmark on success, timeout on pending/error */}
+        <Show when={props.name === 'bash' && !pending() && !isError()}>
+          <span class="compact-tool-check">{'\u2713'}</span>
+        </Show>
+        <Show when={bashTimeout() && (pending() || isError())}>
           <span class="compact-tool-timeout">{bashTimeout()}</span>
         </Show>
       </button>

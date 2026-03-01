@@ -834,6 +834,18 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-size: var(--size-xs);
   color: var(--text-2);
 }
+.compact-tool-check {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: var(--size-xs);
+  color: var(--text-1);
+  animation: stamp-pop 0.25s ease-out both;
+}
+@keyframes stamp-pop {
+  0%   { transform: scale(1.8); opacity: 0; }
+  60%  { transform: scale(0.95); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
 
 /* Context discovery lines: indented and dimmed to distinguish from tool calls */
 .compact-tool-context { margin-left: 12px; }
