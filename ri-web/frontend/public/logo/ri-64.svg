@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- ri mark: 64px. Standard icon.
+       Gradient ring, visible inner ring, clean diamond. -->
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#33aaff"/>
+      <stop offset="100%" stop-color="#007acc"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="26" fill="none" stroke="url(#ring)" stroke-width="3"/>
+  <circle cx="32" cy="32" r="17" fill="none" stroke="#007acc" stroke-width="1" opacity="0.25"/>
+  <rect x="27.5" y="27.5" width="9" height="9" rx="1.4"
+        fill="#007acc" transform="rotate(45 32 32)"/>
+</svg>

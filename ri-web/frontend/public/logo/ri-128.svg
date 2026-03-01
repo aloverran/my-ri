@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- ri mark: 128px. Detailed icon.
+       Refined gradients, a visible inner ring, subtle glow on the diamond. -->
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#33aaff"/>
+      <stop offset="100%" stop-color="#0070b8"/>
+    </linearGradient>
+    <linearGradient id="gem" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a9fff"/>
+      <stop offset="100%" stop-color="#006ab5"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer ring -->
+  <circle cx="64" cy="64" r="52" fill="none" stroke="url(#ring)" stroke-width="4.5"/>
+
+  <!-- Inner ring -->
+  <circle cx="64" cy="64" r="34" fill="none" stroke="#007acc" stroke-width="1.5" opacity="0.2"/>
+
+  <!-- Diamond with subtle glow -->
+  <rect x="55" y="55" width="18" height="18" rx="2.5"
+        fill="#007acc" opacity="0.25" transform="rotate(45 64 64)"
+        filter="url(#glow)"/>
+  <rect x="55" y="55" width="18" height="18" rx="2.5"
+        fill="url(#gem)" transform="rotate(45 64 64)"/>
+</svg>

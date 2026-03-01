@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- ri mark: 32px. Standard favicon.
+       Clean ring, crisp diamond. Slightly refined stroke weights. -->
+  <circle cx="16" cy="16" r="12" fill="none" stroke="#007acc" stroke-width="2.5"/>
+  <rect x="13" y="13" width="6" height="6" rx="1"
+        fill="#007acc" transform="rotate(45 16 16)"/>
+</svg>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ri logo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #121212; color: #aaa; padding: 40px; }
+  h1 { color: #fff; font-size: 20px; margin-bottom: 32px; }
+  h2 { color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin: 32px 0 12px; }
+  .strip { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .item label { font-size: 10px; color: #444; }
+  .f { background: #1e1e1e; border: 1px solid #2a2a2a; border-radius: 6px;
+       display: flex; align-items: center; justify-content: center; }
+  .mono { display: flex; gap: 24px; align-items: center; }
+  .light { background: #f0f0f0; border-color: #ddd; }
+</style>
+</head>
+<body>
+<h1>ri mark</h1>
+
+<h2>size progression</h2>
+<div class="strip">
+  <div class="item">
+    <div class="f" style="width:32px;height:32px"><img src="ri-16.svg" width="16" height="16"></div>
+    <label>16</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:48px;height:48px"><img src="ri-32.svg" width="32" height="32"></div>
+    <label>32</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:64px;height:64px"><img src="ri-48.svg" width="48" height="48"></div>
+    <label>48</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:80px;height:80px"><img src="ri-64.svg" width="64" height="64"></div>
+    <label>64</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:144px;height:144px"><img src="ri-128.svg" width="128" height="128"></div>
+    <label>128</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:196px;height:196px"><img src="ri-180.svg" width="180" height="180"></div>
+    <label>180</label>
+  </div>
+  <div class="item">
+    <div class="f" style="width:260px;height:260px;padding:8px"><img src="ri-512.svg" width="240" height="240"></div>
+    <label>512</label>
+  </div>
+</div>
+
+<h2>monochrome</h2>
+<div class="mono">
+  <div class="item">
+    <div class="f" style="width:80px;height:80px"><img src="ri-mono-light.svg" width="48" height="48"></div>
+    <label>white on dark</label>
+  </div>
+  <div class="item">
+    <div class="f light" style="width:80px;height:80px"><img src="ri-mono-dark.svg" width="48" height="48"></div>
+    <label>dark on light</label>
+  </div>
+</div>
+</body>
+</html>

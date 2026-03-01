@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- ri mark: monochrome white (for dark backgrounds) -->
+  <circle cx="16" cy="16" r="12" fill="none" stroke="#ffffff" stroke-width="2.5"/>
+  <rect x="13" y="13" width="6" height="6" rx="1"
+        fill="#ffffff" transform="rotate(45 16 16)"/>
+</svg>

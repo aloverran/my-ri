@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- ri mark: 16px. Ultra-simplified.
+       Bold ring, bold diamond, nothing else. -->
+  <circle cx="8" cy="8" r="6.5" fill="none" stroke="#007acc" stroke-width="1.8"/>
+  <rect x="6" y="6" width="4" height="4" rx="0.6"
+        fill="#007acc" transform="rotate(45 8 8)"/>
+</svg>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- ri mark: 48px. App icon / toolbar size.
+       Gradient appears on the ring. Faint inner ring for depth. -->
+  <defs>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#33aaff"/>
+      <stop offset="100%" stop-color="#007acc"/>
+    </linearGradient>
+  </defs>
+  <circle cx="24" cy="24" r="19" fill="none" stroke="url(#ring)" stroke-width="2.8"/>
+  <circle cx="24" cy="24" r="12.5" fill="none" stroke="#007acc" stroke-width="0.8" opacity="0.25"/>
+  <rect x="20.5" y="20.5" width="7" height="7" rx="1.2"
+        fill="#007acc" transform="rotate(45 24 24)"/>
+</svg>
