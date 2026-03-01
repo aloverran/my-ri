@@ -20,16 +20,17 @@ interface ChatViewProps {
 
 /// Scan messages in reverse for the last successful assistant message.
 /// "Successful" = assistant message with no error content blocks.
-/// Returns model from provenance, thinking from meta.
-function lastSuccessfulSettings(messages: Message[]): { model?: string; thinking?: string } {
+/// Returns model, thinking, and usage from the message's meta field.
+function lastSuccessfulSettings(messages: Message[]): { model?: string; thinking?: string; usage?: Usage } {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role !== 'assistant' || !m.provenance) continue;
+    if (m.role !== 'assistant' || !m.meta) continue;
     const hasError = m.content.some(b => b.type === 'error');
     if (!hasError) {
       return {
-        model: m.provenance.model,
-        thinking: m.meta?.thinking as string | undefined,
+        model: m.meta.model as string | undefined,
+        thinking: m.meta.thinking as string | undefined,
+        usage: m.meta.usage as Usage | undefined,
       };
     }
   }
@@ -189,14 +190,15 @@ export default function ChatView(props: ChatViewProps) {
           }
 
           // Update settings from the just-completed assistant message.
-          if (msg.role === 'assistant' && msg.provenance) {
+          if (msg.role === 'assistant' && msg.meta) {
             const hasError = msg.content?.some(b => b.type === 'error');
             if (!hasError) {
-              if (msg.provenance.model) setModel(msg.provenance.model);
-              const msgThinking = msg.meta?.thinking as string | undefined;
+              if (msg.meta.model) setModel(msg.meta.model as string);
+              const msgThinking = msg.meta.thinking as string | undefined;
               if (msgThinking && THINKING_LEVELS.includes(msgThinking as ThinkingLevel)) {
                 setThinking(msgThinking as ThinkingLevel);
               }
+              if (msg.meta.usage) setUsage(msg.meta.usage as Usage);
             }
           }
 
@@ -230,6 +232,7 @@ export default function ChatView(props: ChatViewProps) {
     if (prev.thinking && THINKING_LEVELS.includes(prev.thinking as ThinkingLevel)) {
       setThinking(prev.thinking as ThinkingLevel);
     }
+    if (prev.usage) setUsage(prev.usage);
     requestAnimationFrame(scrollToBottom);
   });
 

@@ -425,7 +425,7 @@ export default function MessageView(props: MessageViewProps) {
   };
 
   const timestamp = () => {
-    const ts = props.message.provenance?.ts;
+    const ts = props.message.meta?.ts as string | undefined;
     if (!ts) return '';
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
@@ -495,10 +495,10 @@ export default function MessageView(props: MessageViewProps) {
         </div>
 
         {/* Usage stats in debug mode for assistant messages */}
-        <Show when={props.mode === 'debug' && props.message.provenance?.usage}>
+        <Show when={props.mode === 'debug' && props.message.meta?.usage && props.message.meta?.model}>
           <UsageStats
-            usage={props.message.provenance!.usage!}
-            model={props.message.provenance!.model}
+            usage={props.message.meta!.usage as Usage}
+            model={props.message.meta!.model as string}
           />
         </Show>
 

@@ -28,7 +28,6 @@ export interface Message {
   id: string;
   role: "system" | "user" | "assistant";
   content: ContentBlock[];
-  provenance?: Provenance;
   meta?: Record<string, unknown>;
 }
 
@@ -39,13 +38,6 @@ export type ContentBlock =
   | { type: "tool_result"; toolUseId: string; content: ContentBlock[]; is_error: boolean; details?: Record<string, unknown> }
   | { type: "image"; mediaType: string; data: string }
   | { type: "error"; message: string };
-
-export interface Provenance {
-  input: string[];
-  model: string;
-  ts: string;
-  usage?: Usage;
-}
 
 export interface Usage {
   input_tokens: number;
