@@ -1,14 +1,23 @@
 //! Meta-tools for orchestrating ri from within an agent loop.
 //!
-//! Three tools that let an LLM agent control ri itself:
-//! - `runAgent`: spawn a sub-agent loop asynchronously
-//! - `readSession`: read a session's message history
+//! Five tools organized by function:
+//!
+//! Read:
+//! - `readContextGraph`: DAG neighborhood explorer (replaces readSession)
 //! - `readMessage`: inspect a single message with provenance
+//!
+//! Write (the context algebra primitives):
+//! - `appendMessage`: create a message and advance a context in one step
+//! - `createContext`: compose a context from any set of message IDs
+//!
+//! Execute:
+//! - `runAgent`: spawn a sub-agent loop asynchronously
 //!
 //! These are constructed with shared state (Weak<AppState>) and registered
 //! alongside the base coding tools. Sub-agents spawned by runAgent receive
 //! only the base tools (no recursion into meta-tools).
 
+use std::collections::{HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
@@ -19,8 +28,8 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, Message, MessageId, Role, SessionHeader, SessionId, Store, ThinkingLevel, Tool, ToolContext,
-    ToolOutput,
+    ContentBlock, ContextId, Message, MessageId, Role, SessionHeader, SessionId, Store,
+    ThinkingLevel, Tool, ToolContext, ToolOutput,
 };
 
 use crate::agent;
@@ -36,8 +45,10 @@ use crate::state::{AppState, RunHandle, SessionState};
 pub fn create(app: Weak<AppState>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(RunAgentTool { app: app.clone() }),
-        Arc::new(ReadSessionTool { app: app.clone() }),
-        Arc::new(ReadMessageTool { app }),
+        Arc::new(ReadContextGraphTool { app: app.clone() }),
+        Arc::new(ReadMessageTool { app: app.clone() }),
+        Arc::new(AppendMessageTool { app: app.clone() }),
+        Arc::new(CreateContextTool { app }),
     ]
 }
 
@@ -61,12 +72,12 @@ impl Tool for RunAgentTool {
     }
 
     fn description(&self) -> &str {
-        "Starts a single turn of an LLM agent, async, writing the resulting \
-         assistant messages and tool call user messages back into the message \
-         store, and updating the session to point at the final message. \
+        "Starts a full agent loop (LLM turn, tool calls, repeat until done), async. \
+         Writes resulting messages back to the store and updates the session head. \
+         Requires either context_id or message_ids for conversation history. \
          Session can be a new name and the corresponding session will be \
          created. If not provided a random one will be created and returned. *Always* use \
-         `readSession` on the current session before using runAgent to pass context from this session."
+         `readContextGraph` on the current session before using runAgent to pass context from this session."
     }
 
     fn parameters(&self) -> Value {
@@ -74,10 +85,14 @@ impl Tool for RunAgentTool {
         json!({
             "type": "object",
             "properties": {
+                "context_id": {
+                    "type": "string",
+                    "description": "A context ID to use as the prompt history. Resolves to its message list. Preferred over message_ids."
+                },
                 "message_ids": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "A list of message ids making up the prompt history for this turn to start from."
+                    "description": "A list of message ids making up the prompt history for this turn to start from. Used when context_id is not provided."
                 },
                 "user_prompt": {
                     "type": "string",
@@ -100,7 +115,7 @@ impl Tool for RunAgentTool {
                     }
                 }
             },
-            "required": ["message_ids", "model_id"]
+            "required": ["model_id"]
         })
     }
 
@@ -111,13 +126,19 @@ impl Tool for RunAgentTool {
         };
 
         // -- Parse inputs --
+        // context_id wins over message_ids. At least one must be provided.
 
-        let message_ids: Vec<MessageId> = match input.get("message_ids").and_then(|v| v.as_array()) {
-            Some(arr) => arr
-                .iter()
+        let message_ids: Vec<MessageId> = if let Some(cid) = input.get("context_id").and_then(|v| v.as_str()) {
+            match resolve_context_messages(&app, ctx.session_id.as_ref(), cid).await {
+                Some(ids) => ids,
+                None => return err(&format!("context '{}' not found", cid)),
+            }
+        } else if let Some(arr) = input.get("message_ids").and_then(|v| v.as_array()) {
+            arr.iter()
                 .filter_map(|v| v.as_str().map(MessageId::from))
-                .collect(),
-            None => return err("missing 'message_ids' parameter"),
+                .collect()
+        } else {
+            return err("either 'context_id' or 'message_ids' is required");
         };
 
         let model_id = match input.get("model_id").and_then(|v| v.as_str()) {
@@ -304,25 +325,33 @@ async fn setup_session(
 }
 
 // ---------------------------------------------------------------------------
-// readSession
+// readContextGraph
 // ---------------------------------------------------------------------------
 
-/// Read a session's message history from its JSONL file.
-struct ReadSessionTool {
+/// DAG neighborhood explorer. Shows all contexts reachable from an entry
+/// point (session head or explicit context), with diffs showing how each
+/// context's message list changed from its parent.
+struct ReadContextGraphTool {
     app: Weak<AppState>,
 }
 
+/// Default depth limit for ancestor/descendant traversal.
+const GRAPH_DEPTH: usize = 10;
+
 #[async_trait]
-impl Tool for ReadSessionTool {
+impl Tool for ReadContextGraphTool {
     fn name(&self) -> &str {
-        "readSession"
+        "readContextGraph"
     }
 
     fn description(&self) -> &str {
-        "Returns the reflog of the given session, in reverse-chronological \
-         order (first is the current session pointer). Each entry contains \
-         the message_id. Use the optional parameters to control how much of \
-         the session to read or limit content blocks to a certain number of bytes."
+        "Explore the context DAG reachable from a session or context. Requires \
+         either session_id or context_id as an entry point. \
+         Returns a flat list of context nodes with parent references \
+         and diffs showing which messages were added/removed at each step. \
+         The entry context shows its full message list. Message IDs include \
+         inline summaries so you can understand the conversation without \
+         follow-up readMessage calls."
     }
 
     fn parameters(&self) -> Value {
@@ -331,18 +360,17 @@ impl Tool for ReadSessionTool {
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "The session to read."
+                    "description": "Session to explore (resolves to its head context)."
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "How many messages in the session to read."
+                "context_id": {
+                    "type": "string",
+                    "description": "Context to explore directly. Takes precedence over session_id."
                 },
-                "contentLimit": {
+                "depth": {
                     "type": "integer",
-                    "description": "How many bytes of each message to return."
+                    "description": "Max traversal depth in each direction. Default 10."
                 }
-            },
-            "required": ["session_id"]
+            }
         })
     }
 
@@ -352,55 +380,224 @@ impl Tool for ReadSessionTool {
             None => return err("ri server is shutting down"),
         };
 
-        let session_id = match input.get("session_id").and_then(|v| v.as_str()) {
-            Some(id) => id,
-            None => return err("missing 'session_id' parameter"),
-        };
-        let limit = input
-            .get("limit")
-            .and_then(|v| {
-                v.as_u64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-            })
-            .map(|n| n as usize);
-        let content_limit = input
-            .get("contentLimit")
-            .and_then(|v| {
-                v.as_u64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-            })
-            .map(|n| n as usize);
+        let depth = input.get("depth")
+            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .map(|n| n as usize)
+            .unwrap_or(GRAPH_DEPTH);
 
-        // First check in-memory sessions (they have the most current state).
-        let sessions = app.sessions.read().await;
-        if let Some(session) = sessions.get(session_id) {
-            let lock = session.lock().await;
-            let mut messages: Vec<Message> = lock
-                .store
-                .pool
-                .resolve(&lock.message_ids)
-                .into_iter()
-                .cloned()
-                .collect();
-            messages.reverse();
-            return format_session_output(messages, limit, content_limit);
-        }
-        drop(sessions);
+        // Resolve entry point: context_id takes precedence, then session_id.
+        let context_id_str = input.get("context_id").and_then(|v| v.as_str());
+        let session_id_str = input.get("session_id").and_then(|v| v.as_str());
 
-        // Fall back to reading from disk.
-        let path = app.sessions_dir.join(format!("{}.jsonl", session_id));
-        if !path.exists() {
-            return err(&format!("session '{}' not found", session_id));
-        }
-
-        match read_session_messages(&path, &app.sessions_dir) {
-            Ok(mut messages) => {
-                messages.reverse();
-                format_session_output(messages, limit, content_limit)
+        let entry_id = if let Some(cid) = context_id_str {
+            cid.to_string()
+        } else if let Some(sid) = session_id_str {
+            match resolve_session_head(&app, sid).await {
+                Some(head) => head,
+                None => return err(&format!("session '{}' not found or has no head", sid)),
             }
-            Err(e) => err(&format!("failed to read session: {}", e)),
+        } else {
+            return err("either 'session_id' or 'context_id' is required");
+        };
+
+        // Load a store snapshot for graph traversal.
+        let mut store = Store::new(app.sessions_dir.clone());
+        if let Err(e) = store.load_all() {
+            return err(&format!("failed to load store: {}", e));
+        }
+
+        // Also merge in any in-memory contexts/messages that haven't been
+        // checkpointed yet (active sessions have fresh objects in their pools).
+        merge_in_memory_state(&app, &mut store).await;
+
+        let pool = &store.pool;
+
+        let entry = match pool.get_context(&entry_id) {
+            Some(ctx) => ctx,
+            None => return err(&format!("context '{}' not found", entry_id)),
+        };
+
+        // Collect all reachable contexts via BFS in both directions.
+        let mut visited = HashSet::new();
+        let mut reachable: Vec<String> = Vec::new();
+        visited.insert(entry_id.clone());
+
+        // Backward: walk parents.
+        {
+            let mut back_queue: VecDeque<(String, usize)> = VecDeque::new();
+            for pid in &entry.parents {
+                back_queue.push_back((pid.to_string(), 1));
+            }
+            while let Some((id, d)) = back_queue.pop_front() {
+                if d > depth || !visited.insert(id.clone()) { continue; }
+                reachable.push(id.clone());
+                if let Some(ctx) = pool.get_context(&id) {
+                    for pid in &ctx.parents {
+                        back_queue.push_back((pid.to_string(), d + 1));
+                    }
+                }
+            }
+        }
+
+        // Forward: walk children.
+        {
+            let mut fwd_queue: VecDeque<(String, usize)> = VecDeque::new();
+            for child in pool.children(&entry_id) {
+                fwd_queue.push_back((child.id.to_string(), 1));
+            }
+            while let Some((id, d)) = fwd_queue.pop_front() {
+                if d > depth || !visited.insert(id.clone()) { continue; }
+                reachable.push(id.clone());
+                for child in pool.children(&id) {
+                    fwd_queue.push_back((child.id.to_string(), d + 1));
+                }
+            }
+        }
+
+        // Build output nodes. Entry context gets full message list; others get diffs.
+        let mut nodes: Vec<Value> = Vec::new();
+
+        // Entry node first (full list).
+        let entry_summaries = summarize_messages(pool, &entry.messages);
+        nodes.push(json!({
+            "id": entry_id,
+            "is_entry": true,
+            "parents": entry.parents,
+            "messages": entry.messages,
+            "summaries": entry_summaries,
+        }));
+
+        // Remaining reachable contexts.
+        for id in &reachable {
+            let ctx = match pool.get_context(&id) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            // Diff against first parent.
+            let node = if let Some(parent_id) = ctx.parents.first() {
+                if let Some(parent) = pool.get_context(parent_id.as_str()) {
+                    let (added, removed) = diff_message_lists(&parent.messages, &ctx.messages);
+                    let added_summaries = summarize_messages(pool, &added);
+                    json!({
+                        "id": id,
+                        "parents": ctx.parents,
+                        "diff": {
+                            "vs": parent_id,
+                            "added": added,
+                            "removed": removed,
+                            "added_summaries": added_summaries,
+                        },
+                    })
+                } else {
+                    // Parent not in pool -- show full list.
+                    let summaries = summarize_messages(pool, &ctx.messages);
+                    json!({
+                        "id": id,
+                        "parents": ctx.parents,
+                        "messages": ctx.messages,
+                        "summaries": summaries,
+                    })
+                }
+            } else {
+                // Root context (no parents) -- show full list.
+                let summaries = summarize_messages(pool, &ctx.messages);
+                json!({
+                    "id": id,
+                    "parents": ctx.parents,
+                    "messages": ctx.messages,
+                    "summaries": summaries,
+                })
+            };
+
+            nodes.push(node);
+        }
+
+        let output = json!({
+            "entry": entry_id,
+            "context_count": nodes.len(),
+            "contexts": nodes,
+        });
+
+        let text = serde_json::to_string_pretty(&output).unwrap_or_default();
+        ToolOutput {
+            text,
+            is_error: false,
+            details: Some(output),
         }
     }
+}
+
+/// Resolve a session ID to its head context ID. Checks in-memory first, then disk.
+async fn resolve_session_head(app: &AppState, session_id: &str) -> Option<String> {
+    // In-memory sessions have the most current head.
+    let sessions = app.sessions.read().await;
+    if let Some(session) = sessions.get(session_id) {
+        let lock = session.lock().await;
+        return lock.store.get_session(lock.file_id.as_str())
+            .map(|s| s.head.to_string());
+    }
+    drop(sessions);
+
+    // Fall back to disk.
+    let mut store = Store::new(app.sessions_dir.clone());
+    store.load_all().ok()?;
+    let session = store.get_session(session_id)?;
+    Some(session.head.to_string())
+}
+
+/// Merge contexts and messages from in-memory sessions into a store snapshot.
+/// Active sessions may have objects that haven't been checkpointed to disk yet.
+async fn merge_in_memory_state(app: &AppState, store: &mut Store) {
+    let sessions = app.sessions.read().await;
+    for (_sid, session_arc) in sessions.iter() {
+        if let Ok(lock) = session_arc.try_lock() {
+            // Copy messages that the disk store doesn't have yet.
+            for mid in &lock.message_ids {
+                if store.pool.get_message(mid.as_str()).is_none() {
+                    if let Some(msg) = lock.store.pool.get_message(mid.as_str()) {
+                        store.pool.put_message(msg.clone());
+                    }
+                }
+            }
+            // Copy contexts visible in the session's pool.
+            if let Some(s) = lock.store.get_session(lock.file_id.as_str()) {
+                if store.pool.get_context(s.head.as_str()).is_none() {
+                    if let Some(ctx) = lock.store.pool.get_context(s.head.as_str()) {
+                        store.pool.put_context(ctx.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compute added/removed message IDs between a parent and child context.
+fn diff_message_lists(parent: &[MessageId], child: &[MessageId]) -> (Vec<MessageId>, Vec<MessageId>) {
+    let parent_set: HashSet<&str> = parent.iter().map(|id| id.as_str()).collect();
+    let child_set: HashSet<&str> = child.iter().map(|id| id.as_str()).collect();
+
+    let added: Vec<MessageId> = child.iter()
+        .filter(|id| !parent_set.contains(id.as_str()))
+        .cloned()
+        .collect();
+    let removed: Vec<MessageId> = parent.iter()
+        .filter(|id| !child_set.contains(id.as_str()))
+        .cloned()
+        .collect();
+
+    (added, removed)
+}
+
+/// Build a map of message ID -> summary string for the given IDs.
+fn summarize_messages(pool: &ri::Pool, ids: &[MessageId]) -> Value {
+    let mut map = serde_json::Map::new();
+    for id in ids {
+        if let Some(msg) = pool.get_message(id.as_str()) {
+            map.insert(id.to_string(), Value::String(msg.summarize()));
+        }
+    }
+    Value::Object(map)
 }
 
 // ---------------------------------------------------------------------------
@@ -479,8 +676,263 @@ impl Tool for ReadMessageTool {
 }
 
 // ---------------------------------------------------------------------------
+// appendMessage
+// ---------------------------------------------------------------------------
+
+/// Create a message and advance a context in one atomic step.
+///
+/// Creates a message, then creates a new context with the old context's
+/// messages plus the new one. The old context becomes a parent. If no
+/// context_id is provided, creates a fresh context with just the new message.
+struct AppendMessageTool {
+    app: Weak<AppState>,
+}
+
+#[async_trait]
+impl Tool for AppendMessageTool {
+    fn name(&self) -> &str {
+        "appendMessage"
+    }
+
+    fn description(&self) -> &str {
+        "Create a message and advance a context in one step. Returns both \
+         the new context_id (primary -- pass to appendMessage, createContext, \
+         or runAgent) and the message_id (secondary -- useful for cherry-picking \
+         in createContext). If context_id is omitted, creates a fresh context \
+         containing only the new message."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "context_id": {
+                    "type": "string",
+                    "description": "Context to append to. If omitted, creates a fresh context."
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["user", "assistant", "system"],
+                    "description": "The role of the message."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Text content of the message."
+                }
+            },
+            "required": ["role", "content"]
+        })
+    }
+
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
+        let app = match self.app.upgrade() {
+            Some(a) => a,
+            None => return err("ri server is shutting down"),
+        };
+
+        let role = match input.get("role").and_then(|v| v.as_str()).and_then(parse_role) {
+            Some(r) => r,
+            None => return err("missing or invalid 'role' parameter (user, assistant, system)"),
+        };
+        let content = match input.get("content").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return err("missing 'content' parameter"),
+        };
+        let parent_context_id = input.get("context_id").and_then(|v| v.as_str());
+
+        let session_id = match ctx.session_id.as_ref() {
+            Some(id) => id,
+            None => return err("no calling session -- appendMessage requires a session context"),
+        };
+
+        let sessions = app.sessions.read().await;
+        let session = match sessions.get(session_id.as_str()) {
+            Some(s) => s,
+            None => return err(&format!("calling session '{}' not found in memory", session_id)),
+        };
+
+        let mut lock = session.lock().await;
+        let sid = lock.file_id.clone();
+
+        // Resolve the parent context's messages (if any).
+        let parent_messages: Vec<MessageId> = if let Some(cid) = parent_context_id {
+            match lock.store.pool.get_context(cid) {
+                Some(ctx) => ctx.messages.clone(),
+                None => return err(&format!("context '{}' not found", cid)),
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Write the new message.
+        let msg = match lock.store.write_message(
+            &sid,
+            role,
+            vec![ContentBlock::text(content)],
+            None,
+        ) {
+            Ok(m) => m,
+            Err(e) => return err(&format!("failed to write message: {}", e)),
+        };
+
+        // Build the new context: parent's messages + new message.
+        let mut new_messages = parent_messages;
+        new_messages.push(msg.id.clone());
+
+        let parents: Vec<ContextId> = parent_context_id
+            .map(|cid| vec![ContextId::from(cid)])
+            .unwrap_or_default();
+
+        let new_ctx = match lock.store.write_context(
+            &sid,
+            new_messages,
+            parents,
+            None,
+        ) {
+            Ok(c) => c,
+            Err(e) => return err(&format!("failed to write context: {}", e)),
+        };
+
+        let msg_id = msg.id.to_string();
+        let ctx_id = new_ctx.id.to_string();
+        ToolOutput {
+            text: format!("Appended message [{}], new context [{}] ({} messages)",
+                msg_id, ctx_id, new_ctx.messages.len()),
+            is_error: false,
+            details: Some(json!({
+                "context_id": ctx_id,
+                "message_id": msg_id,
+            })),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// createContext
+// ---------------------------------------------------------------------------
+
+/// Compose a new context from an arbitrary set of message IDs.
+///
+/// The fundamental write primitive: any context algebra operation
+/// (append, merge, filter, fork, compact) is expressed as a createContext
+/// call with the right message list and parents.
+struct CreateContextTool {
+    app: Weak<AppState>,
+}
+
+#[async_trait]
+impl Tool for CreateContextTool {
+    fn name(&self) -> &str {
+        "createContext"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new context from an ordered list of message IDs. \
+         Optionally specify parent context IDs for DAG lineage. \
+         Returns the new context_id. Use this to compose, merge, \
+         filter, or fork contexts."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "message_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Ordered list of message IDs that make up this context."
+                },
+                "parents": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Parent context IDs for DAG lineage tracking. Optional."
+                }
+            },
+            "required": ["message_ids"]
+        })
+    }
+
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
+        let app = match self.app.upgrade() {
+            Some(a) => a,
+            None => return err("ri server is shutting down"),
+        };
+
+        let message_ids: Vec<MessageId> = match input.get("message_ids").and_then(|v| v.as_array()) {
+            Some(arr) => arr.iter()
+                .filter_map(|v| v.as_str().map(MessageId::from))
+                .collect(),
+            None => return err("missing 'message_ids' parameter"),
+        };
+
+        let parents: Vec<ContextId> = input.get("parents")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter()
+                .filter_map(|v| v.as_str().map(ContextId::from))
+                .collect())
+            .unwrap_or_default();
+
+        let session_id = match ctx.session_id.as_ref() {
+            Some(id) => id,
+            None => return err("no calling session -- createContext requires a session context"),
+        };
+
+        let sessions = app.sessions.read().await;
+        let session = match sessions.get(session_id.as_str()) {
+            Some(s) => s,
+            None => return err(&format!("calling session '{}' not found in memory", session_id)),
+        };
+
+        let mut lock = session.lock().await;
+        let sid = lock.file_id.clone();
+        let context = match lock.store.write_context(
+            &sid,
+            message_ids,
+            parents,
+            None,
+        ) {
+            Ok(c) => c,
+            Err(e) => return err(&format!("failed to write context: {}", e)),
+        };
+
+        let id = context.id.to_string();
+        ToolOutput {
+            text: format!("Created context [{}] ({} messages)", id, context.messages.len()),
+            is_error: false,
+            details: Some(json!({ "context_id": id })),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve a context_id to its message list. Checks the caller's in-memory
+/// pool first, then falls back to loading everything from disk.
+async fn resolve_context_messages(
+    app: &AppState,
+    caller_sid: Option<&SessionId>,
+    context_id: &str,
+) -> Option<Vec<MessageId>> {
+    // Try the caller's in-memory pool first.
+    if let Some(sid) = caller_sid {
+        let sessions = app.sessions.read().await;
+        if let Some(session) = sessions.get(sid.as_str()) {
+            if let Ok(lock) = session.try_lock() {
+                if let Some(ctx) = lock.store.pool.get_context(context_id) {
+                    return Some(ctx.messages.clone());
+                }
+            }
+        }
+    }
+
+    // Fallback: load everything from disk.
+    let mut store = Store::new(app.sessions_dir.clone());
+    store.load_all().ok()?;
+    let ctx = store.pool.get_context(context_id)?;
+    Some(ctx.messages.clone())
+}
 
 fn err(msg: &str) -> ToolOutput {
     ToolOutput {
@@ -501,83 +953,21 @@ fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
     }
 }
 
+fn parse_role(s: &str) -> Option<Role> {
+    match s {
+        "user" => Some(Role::User),
+        "assistant" => Some(Role::Assistant),
+        "system" => Some(Role::System),
+        _ => None,
+    }
+}
+
 fn read_header(path: &std::path::Path) -> eyre::Result<SessionHeader> {
     let file = std::fs::File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     reader.read_line(&mut line)?;
     Ok(serde_json::from_str(line.trim())?)
-}
-
-/// Read all messages from a session file via the Store's pool.
-fn read_session_messages(
-    path: &std::path::Path,
-    sessions_dir: &std::path::Path,
-) -> eyre::Result<Vec<Message>> {
-    let mut store = Store::new(sessions_dir.to_path_buf());
-    store.load_all()?;
-
-    let file_id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-
-    // If the session has a head step, resolve its context.
-    if let Some(session) = store.get_session(file_id) {
-        if let Some(ctx) = store.pool.get_context(session.head.as_str()) {
-            return Ok(store.pool.resolve_context(ctx)
-                .into_iter()
-                .cloned()
-                .collect());
-        }
-    }
-
-    // Fallback: parse message lines from the file and look them up in the pool.
-    let file = std::fs::File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut messages = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
-        if let Ok(obj) = serde_json::from_str::<Value>(trimmed) {
-            if let Some(msg_id) = obj.get("msg").and_then(|v| v.as_str()) {
-                if let Some(msg) = store.pool.get_message(msg_id) {
-                    messages.push(msg.clone());
-                }
-            }
-        }
-    }
-    Ok(messages)
-}
-
-/// Format messages for the readSession tool output.
-/// Returns a compact summary of each message (role, provenance, usage, truncated content).
-fn format_session_output(
-    mut messages: Vec<Message>,
-    limit: Option<usize>,
-    _content_limit: Option<usize>,
-) -> ToolOutput {
-    if let Some(n) = limit {
-        messages.truncate(n);
-    }
-
-    let summaries: Vec<Value> = messages
-        .iter()
-        .map(|msg| {
-            json!({
-                "id": msg.id,
-                "summary": msg.summarize(),
-            })
-        })
-        .collect();
-
-    let text = serde_json::to_string_pretty(&summaries).unwrap_or_default();
-    ToolOutput {
-        text,
-        is_error: false,
-        details: Some(Value::Array(summaries)),
-    }
 }
 
 /// Search all session files for a message with the given ID.

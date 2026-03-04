@@ -7,6 +7,16 @@ A list of todos and wishlist features for ri.
 - Session parenting! Hide sub-sessions in the main view, and create a navigator in the chat view.
   - A deep message view that shows the session (and children) history pointer and the graph of messages reachable from this session.
 
+# new tools
+
+I think we want:
+
+- createMessage(body: String, Role) -> MessageId
+- createContext([MessageId], parents: [ContextId]) -> ContextId
+ 
+Then do we need something to manipulate the sessions? Sessions feel like they are user facing. But maybe that's because we need something to represent a 'running agent' or.. a locked line of contexts..? Contexts are kinda like patches in pijul the way they branch out without needing parallel locking. Hm.
+
+But we need some way to get the context id of the final context after the agent finishes? Either a promise key.. or.. something? Either it's a pointer that slowly updates. Or it's synchronous and just holds that in memory. I suppose that's the same as 'background task' ids? I guess that's why we can read the session pointers? But we assume they are random rather than persistant.
 
 # parallel tool calls
 
