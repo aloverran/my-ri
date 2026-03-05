@@ -632,7 +632,7 @@ fn extract_system_prompt(messages: &[&ri::Message]) -> String {
         .find(|m| m.role == Role::System)
         .and_then(|m| {
             m.content.iter().find_map(|b| {
-                if let ContentBlock::Text { text } = b {
+                if let ContentBlock::Text { text, .. } = b {
                     Some(text.clone())
                 } else {
                     None

@@ -396,7 +396,7 @@ fn extract_system_prompt(messages: &[&Message]) -> String {
         .find(|m| m.role == Role::System)
         .and_then(|m| {
             m.content.iter().find_map(|b| {
-                if let ContentBlock::Text { text } = b {
+                if let ContentBlock::Text { text, .. } = b {
                     Some(text.clone())
                 } else {
                     None
@@ -573,7 +573,7 @@ async fn generate_title(session: Arc<Mutex<SessionState>>) -> eyre::Result<()> {
     let response_text: String = content
         .iter()
         .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.trim().to_string()),
+            ContentBlock::Text { text, .. } => Some(text.trim().to_string()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -621,7 +621,7 @@ fn build_title_context(messages: &[&Message]) -> Vec<Message> {
             Role::Assistant => "assistant",
         };
         for block in &msg.content {
-            if let ContentBlock::Text { text } = block {
+            if let ContentBlock::Text { text, .. } = block {
                 let trimmed = text.trim();
                 if trimmed.is_empty() { continue; }
                 let truncated = if trimmed.len() > 600 {
@@ -681,7 +681,7 @@ fn last_assistant_preview(messages: &[&Message]) -> Option<String> {
         .content
         .iter()
         .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()

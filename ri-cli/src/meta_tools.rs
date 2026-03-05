@@ -264,7 +264,7 @@ async fn run_background_loop(
         .find(|m| m.role == Role::System)
         .and_then(|m| {
             m.content.iter().find_map(|b| {
-                if let ContentBlock::Text { text } = b {
+                if let ContentBlock::Text { text, .. } = b {
                     Some(text.clone())
                 } else {
                     None
@@ -586,7 +586,7 @@ async fn run_background_turn(
         .find(|m| m.role == Role::System)
         .and_then(|m| {
             m.content.iter().find_map(|b| {
-                if let ContentBlock::Text { text } = b {
+                if let ContentBlock::Text { text, .. } = b {
                     Some(text.clone())
                 } else {
                     None
