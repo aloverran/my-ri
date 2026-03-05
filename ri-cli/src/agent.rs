@@ -120,6 +120,7 @@ pub fn run<'a>(
                 tools: tool_schemas.clone(),
                 thinking,
                 max_tokens,
+                native_tools: false,
             };
 
             let mut turn = match Turn::start(provider, opts).await {

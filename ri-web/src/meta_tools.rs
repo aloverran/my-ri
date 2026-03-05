@@ -1,9 +1,9 @@
 //! Meta-tools for orchestrating ri from within an agent loop.
 //!
-//! Five tools organized by function:
+//! Six tools organized by function:
 //!
 //! Read:
-//! - `readContextGraph`: DAG neighborhood explorer (replaces readSession)
+//! - `readContextGraph`: DAG neighborhood explorer
 //! - `readMessage`: inspect a single message with provenance
 //!
 //! Write (the context algebra primitives):
@@ -11,7 +11,8 @@
 //! - `createContext`: compose a context from any set of message IDs
 //!
 //! Execute:
-//! - `runAgent`: spawn a sub-agent loop asynchronously
+//! - `runTurn`: single LLM call (no tools, native capabilities enabled)
+//! - `runAgent`: spawn a sub-agent loop asynchronously (LLM + tools, repeats)
 //!
 //! These are constructed with shared state (Weak<AppState>) and registered
 //! alongside the base coding tools. Sub-agents spawned by runAgent receive
@@ -45,6 +46,7 @@ use crate::state::{AppState, RunHandle, SessionState};
 pub fn create(app: Weak<AppState>) -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(RunAgentTool { app: app.clone() }),
+        Arc::new(RunTurnTool { app: app.clone() }),
         Arc::new(ReadContextGraphTool { app: app.clone() }),
         Arc::new(ReadMessageTool { app: app.clone() }),
         Arc::new(AppendMessageTool { app: app.clone() }),
@@ -333,6 +335,311 @@ async fn setup_session(
         .await
         .insert(file_id.to_string(), arc.clone());
     Ok((arc, file_id))
+}
+
+// ---------------------------------------------------------------------------
+// runTurn
+// ---------------------------------------------------------------------------
+
+/// A single LLM call: send a context, get a response, persist it.
+///
+/// Unlike `runAgent` (which loops: LLM -> tools -> LLM -> ... ), `runTurn`
+/// makes exactly one LLM call with no function-calling tools. The model's
+/// native capabilities are enabled automatically -- for Gemini this means
+/// search grounding and sandboxed code execution.
+///
+/// Use this for getting a single model response: research queries, second
+/// opinions, advisor calls, or any situation where you want a model's
+/// answer without an agent loop.
+struct RunTurnTool {
+    app: Weak<AppState>,
+}
+
+#[async_trait]
+impl Tool for RunTurnTool {
+    fn name(&self) -> &str {
+        "runTurn"
+    }
+
+    fn description(&self) -> &str {
+        "Invoke an LLM for a single response (no tool calls, no agent loop). \
+         The model's native capabilities are enabled automatically -- Gemini \
+         models get search grounding and code execution. Writes the response \
+         to a session asynchronously. Use this for research queries, getting \
+         a second opinion, or any case where you want a direct model response \
+         without agentic tool use."
+    }
+
+    fn parameters(&self) -> Value {
+        let models = ri_ai::registry::available_model_ids().join(", ");
+        json!({
+            "type": "object",
+            "properties": {
+                "context_id": {
+                    "type": "string",
+                    "description": "A context ID to use as the prompt history. Resolves to its message list. Preferred over message_ids."
+                },
+                "message_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "A list of message ids making up the prompt history. Used when context_id is not provided."
+                },
+                "user_prompt": {
+                    "type": "string",
+                    "description": "Text to append as a user message before the LLM call."
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "The session to write the response to. Created if it doesn't exist."
+                },
+                "model_id": {
+                    "type": "string",
+                    "description": format!("The model to call. Available: {}", models)
+                },
+                "model_params": {
+                    "type": "object",
+                    "description": "Parameters for the model call.",
+                    "properties": {
+                        "thinking": { "type": "string", "description": "Thinking level: off, low, medium, high, xhigh" },
+                        "max_tokens": { "type": "integer", "description": "Maximum output tokens." }
+                    }
+                }
+            },
+            "required": ["model_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
+        let app = match self.app.upgrade() {
+            Some(a) => a,
+            None => return err("ri server is shutting down"),
+        };
+
+        let message_ids: Vec<MessageId> = if let Some(cid) = input.get("context_id").and_then(|v| v.as_str()) {
+            match resolve_context_messages(&app, ctx.session_id.as_ref(), cid).await {
+                Some(ids) => ids,
+                None => return err(&format!("context '{}' not found", cid)),
+            }
+        } else if let Some(arr) = input.get("message_ids").and_then(|v| v.as_array()) {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(MessageId::from))
+                .collect()
+        } else {
+            return err("either 'context_id' or 'message_ids' is required");
+        };
+
+        let model_id = match input.get("model_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'model_id' parameter"),
+        };
+
+        let user_prompt = input
+            .get("user_prompt")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let session_id = input
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        let params = input.get("model_params");
+        let thinking = params
+            .and_then(|p| p.get("thinking"))
+            .and_then(|v| v.as_str())
+            .and_then(parse_thinking)
+            .unwrap_or(app.default_thinking);
+        let max_tokens = params
+            .and_then(|p| p.get("max_tokens"))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
+            .map(|n| n as usize);
+
+        let (provider, model) = match ri_ai::registry::resolve(&model_id).await {
+            Ok(r) => r,
+            Err(e) => return err(&format!("model resolution failed: {}", e)),
+        };
+
+        let parent = ctx.session_id.as_ref();
+        let (session_arc, file_id) =
+            match setup_session(&app, session_id, &message_ids, &ctx.cwd, parent).await {
+                Ok(v) => v,
+                Err(e) => return err(&format!("session setup failed: {}", e)),
+            };
+
+        // Optionally write user prompt.
+        if let Some(text) = &user_prompt {
+            let mut lock = session_arc.lock().await;
+            let sid = lock.file_id.clone();
+            match lock.store.write_message(
+                &sid,
+                Role::User,
+                vec![ContentBlock::text(text)],
+                None,
+            ) {
+                Ok(msg) => lock.message_ids.push(msg.id),
+                Err(e) => return err(&format!("failed to write user message: {}", e)),
+            }
+        }
+
+        // Spawn a single-turn LLM call in the background.
+        let cancel = CancellationToken::new();
+
+        let task = {
+            let session = session_arc.clone();
+            let provider: Arc<dyn ri::LlmProvider> = Arc::from(provider);
+            let cancel_inner = cancel.clone();
+            tokio::spawn(async move {
+                let result = run_single_turn(
+                    &session,
+                    provider.as_ref(),
+                    &model,
+                    thinking,
+                    max_tokens,
+                    &cancel_inner,
+                )
+                .await;
+                if let Err(e) = result {
+                    let mut lock = session.lock().await;
+                    let sid = lock.file_id.clone();
+                    if let Ok(msg) = lock.store.write_message(
+                        &sid,
+                        ri::Role::Assistant,
+                        vec![ri::ContentBlock::error(e.to_string())],
+                        None,
+                    ) {
+                        lock.message_ids.push(msg.id.clone());
+                    }
+                    let ids = lock.message_ids.clone();
+                    let _ = lock.store.checkpoint(&sid, &ids, None);
+                    let _ = lock.events_tx.send(agent::AgentEvent::Error(e.to_string()));
+                }
+                let mut lock = session.lock().await;
+                lock.current_run = None;
+            })
+        };
+
+        {
+            let mut lock = session_arc.lock().await;
+            lock.current_run = Some(RunHandle { cancel, task });
+        }
+
+        ToolOutput {
+            text: format!("Single turn started on session '{}'", file_id),
+            is_error: false,
+            details: Some(json!({ "session_id": file_id })),
+        }
+    }
+}
+
+/// Execute a single LLM turn: resolve messages, call the model (with native
+/// tools enabled, no function-calling tools), persist the response.
+async fn run_single_turn(
+    session: &Arc<Mutex<SessionState>>,
+    provider: &dyn ri::LlmProvider,
+    model: &ri::Model,
+    thinking: ri::ThinkingLevel,
+    max_tokens: Option<usize>,
+    cancel: &CancellationToken,
+) -> eyre::Result<()> {
+    let (tx, session_id) = {
+        let lock = session.lock().await;
+        (lock.events_tx.clone(), lock.file_id.clone())
+    };
+    let thinking_str = thinking_to_str(thinking).to_string();
+
+    // Resolve messages and extract system prompt.
+    let (system_prompt, messages) = {
+        let lock = session.lock().await;
+        let resolved = lock.store.pool.resolve(&lock.message_ids);
+        let sys = extract_system_prompt(&resolved);
+        let msgs: Vec<ri::Message> = resolved.into_iter().cloned().collect();
+        (sys, msgs)
+    };
+
+    let opts = ri::RequestOptions {
+        model: model.clone(),
+        system_prompt,
+        messages,
+        tools: Vec::new(),
+        thinking,
+        max_tokens,
+        native_tools: true,
+    };
+
+    let mut turn = ri_ai::Turn::start(provider, opts).await?;
+
+    // Stream events to SSE subscribers.
+    while let Some(result) = turn.next().await {
+        if cancel.is_cancelled() { break; }
+        match result {
+            Ok(evt) => { let _ = tx.send(agent::AgentEvent::Stream(evt)); }
+            Err(e) => {
+                let _ = tx.send(agent::AgentEvent::Error(e.to_string()));
+                break;
+            }
+        }
+    }
+
+    let (content, usage) = turn.finish();
+
+    // Persist the assistant response.
+    {
+        let mut lock = session.lock().await;
+        let msg = lock.store.write_message(
+            &session_id,
+            ri::Role::Assistant,
+            content,
+            Some(serde_json::json!({
+                "model": model.id,
+                "ts": chrono::Utc::now().to_rfc3339(),
+                "usage": usage,
+                "thinking": thinking_str,
+                "turn": true,
+            })),
+        )?;
+        lock.message_ids.push(msg.id.clone());
+        let _ = tx.send(agent::AgentEvent::MessageComplete(msg));
+    }
+
+    // Checkpoint.
+    {
+        let mut lock = session.lock().await;
+        let sid = lock.file_id.clone();
+        let ids = lock.message_ids.clone();
+        lock.store.checkpoint(&sid, &ids, None)?;
+    }
+
+    let _ = tx.send(agent::AgentEvent::Done);
+    Ok(())
+}
+
+fn thinking_to_str(level: ri::ThinkingLevel) -> &'static str {
+    match level {
+        ri::ThinkingLevel::Off => "off",
+        ri::ThinkingLevel::Low => "low",
+        ri::ThinkingLevel::Medium => "medium",
+        ri::ThinkingLevel::High => "high",
+        ri::ThinkingLevel::XHigh => "xhigh",
+    }
+}
+
+/// Extract the system prompt text from the first System-role message.
+fn extract_system_prompt(messages: &[&ri::Message]) -> String {
+    messages
+        .iter()
+        .find(|m| m.role == Role::System)
+        .and_then(|m| {
+            m.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

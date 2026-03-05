@@ -198,6 +198,7 @@ pub(crate) async fn run_loop(
             tools: tool_schemas.clone(),
             thinking,
             max_tokens,
+            native_tools: false,
         };
 
         // Start the LLM turn.
@@ -559,6 +560,7 @@ async fn generate_title(session: Arc<Mutex<SessionState>>) -> eyre::Result<()> {
         tools: Vec::new(),
         thinking: ThinkingLevel::Off,
         max_tokens: Some(80),
+        native_tools: false,
     };
 
     // Run the LLM call and collect the response text.
