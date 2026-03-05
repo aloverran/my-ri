@@ -69,8 +69,20 @@ pub fn spawn_agent_loop(
         .await;
 
         if let Err(e) = result {
-            // Best effort: broadcast the error.
-            let lock = session.lock().await;
+            // Persist the error into the context so readers can see what happened,
+            // then do a best-effort checkpoint to save all accumulated work.
+            let mut lock = session.lock().await;
+            let sid = lock.file_id.clone();
+            if let Ok(msg) = lock.store.write_message(
+                &sid,
+                Role::Assistant,
+                vec![ContentBlock::error(e.to_string())],
+                None,
+            ) {
+                lock.message_ids.push(msg.id.clone());
+            }
+            let ids = lock.message_ids.clone();
+            let _ = lock.store.checkpoint(&sid, &ids, None);
             let _ = lock.events_tx.send(AgentEvent::Error(e.to_string()));
         }
 
@@ -350,9 +362,20 @@ pub(crate) async fn run_loop(
 
         // Discover and inject AGENTS.md files near files accessed by tool calls.
         inject_discovered_agents(&calls, &cwd, session, &tx).await?;
+
+        // Progressive checkpoint: persist context after each complete tool cycle
+        // so observers (readContextGraph) see progress and crashes don't lose work.
+        {
+            let mut lock = session.lock().await;
+            let sid = lock.file_id.clone();
+            let ids = lock.message_ids.clone();
+            lock.store.checkpoint(&sid, &ids, None)?;
+        }
     }
 
-    // Persist the final context as a step so the session can be reloaded from disk.
+    // Final checkpoint: covers the last iteration where the model stopped
+    // calling tools (break at line 284) -- that assistant message isn't
+    // captured by the in-loop checkpoint above.
     {
         let mut lock = session.lock().await;
         let sid = lock.file_id.clone();

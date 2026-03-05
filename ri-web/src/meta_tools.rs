@@ -222,7 +222,18 @@ impl Tool for RunAgentTool {
                 )
                 .await;
                 if let Err(e) = result {
-                    let lock = session.lock().await;
+                    let mut lock = session.lock().await;
+                    let sid = lock.file_id.clone();
+                    if let Ok(msg) = lock.store.write_message(
+                        &sid,
+                        ri::Role::Assistant,
+                        vec![ri::ContentBlock::error(e.to_string())],
+                        None,
+                    ) {
+                        lock.message_ids.push(msg.id.clone());
+                    }
+                    let ids = lock.message_ids.clone();
+                    let _ = lock.store.checkpoint(&sid, &ids, None);
                     let _ = lock.events_tx.send(agent::AgentEvent::Error(e.to_string()));
                 }
                 let mut lock = session.lock().await;
@@ -454,76 +465,48 @@ impl Tool for ReadContextGraphTool {
             }
         }
 
-        // Build output nodes. Entry context gets full message list; others get diffs.
-        let mut nodes: Vec<Value> = Vec::new();
+        // Format as text: compact representation optimized for LLM consumption.
+        let total = 1 + reachable.len();
+        let mut out = format!("CONTEXT GRAPH entry={} count={}\n", entry_id, total);
 
-        // Entry node first (full list).
-        let entry_summaries = summarize_messages(pool, &entry.messages);
-        nodes.push(json!({
-            "id": entry_id,
-            "is_entry": true,
-            "parents": entry.parents,
-            "messages": entry.messages,
-            "summaries": entry_summaries,
-        }));
+        // Entry context (full message list).
+        out.push('\n');
+        format_context_header(&mut out, &entry_id, &entry.parents, true);
+        format_message_list(&mut out, pool, &entry.messages);
 
         // Remaining reachable contexts.
         for id in &reachable {
             let ctx = match pool.get_context(&id) {
                 Some(c) => c,
-                None => continue,
+                None => {
+                    out.push('\n');
+                    format_context_header(&mut out, id, &[], false);
+                    out.push_str("  (not loaded)\n");
+                    continue;
+                }
             };
 
-            // Diff against first parent.
-            let node = if let Some(parent_id) = ctx.parents.first() {
+            out.push('\n');
+            format_context_header(&mut out, id, &ctx.parents, false);
+
+            if let Some(parent_id) = ctx.parents.first() {
                 if let Some(parent) = pool.get_context(parent_id.as_str()) {
                     let (added, removed) = diff_message_lists(&parent.messages, &ctx.messages);
-                    let added_summaries = summarize_messages(pool, &added);
-                    json!({
-                        "id": id,
-                        "parents": ctx.parents,
-                        "diff": {
-                            "vs": parent_id,
-                            "added": added,
-                            "removed": removed,
-                            "added_summaries": added_summaries,
-                        },
-                    })
+                    format_diff(&mut out, pool, parent_id, &added, &removed);
                 } else {
                     // Parent not in pool -- show full list.
-                    let summaries = summarize_messages(pool, &ctx.messages);
-                    json!({
-                        "id": id,
-                        "parents": ctx.parents,
-                        "messages": ctx.messages,
-                        "summaries": summaries,
-                    })
+                    format_message_list(&mut out, pool, &ctx.messages);
                 }
             } else {
                 // Root context (no parents) -- show full list.
-                let summaries = summarize_messages(pool, &ctx.messages);
-                json!({
-                    "id": id,
-                    "parents": ctx.parents,
-                    "messages": ctx.messages,
-                    "summaries": summaries,
-                })
-            };
-
-            nodes.push(node);
+                format_message_list(&mut out, pool, &ctx.messages);
+            }
         }
 
-        let output = json!({
-            "entry": entry_id,
-            "context_count": nodes.len(),
-            "contexts": nodes,
-        });
-
-        let text = serde_json::to_string_pretty(&output).unwrap_or_default();
         ToolOutput {
-            text,
+            text: out,
             is_error: false,
-            details: Some(output),
+            details: None,
         }
     }
 }
@@ -589,15 +572,69 @@ fn diff_message_lists(parent: &[MessageId], child: &[MessageId]) -> (Vec<Message
     (added, removed)
 }
 
-/// Build a map of message ID -> summary string for the given IDs.
-fn summarize_messages(pool: &ri::Pool, ids: &[MessageId]) -> Value {
-    let mut map = serde_json::Map::new();
-    for id in ids {
-        if let Some(msg) = pool.get_message(id.as_str()) {
-            map.insert(id.to_string(), Value::String(msg.summarize()));
+/// Write a context header line to the output buffer.
+///
+/// Format: `<id> (entry) <- <parent1>, <parent2>`
+/// Root contexts (no parents) omit the `<-`. Non-entry contexts omit `(entry)`.
+fn format_context_header(out: &mut String, id: &str, parents: &[ContextId], is_entry: bool) {
+    out.push_str(id);
+    if is_entry {
+        out.push_str(" (entry)");
+    }
+    if !parents.is_empty() {
+        out.push_str(" <- ");
+        for (i, p) in parents.iter().enumerate() {
+            if i > 0 { out.push_str(", "); }
+            out.push_str(p.as_str());
         }
     }
-    Value::Object(map)
+    out.push('\n');
+}
+
+/// Write indented message lines with inline summaries, or "(no messages)" for empty contexts.
+fn format_message_list(out: &mut String, pool: &ri::Pool, messages: &[MessageId]) {
+    if messages.is_empty() {
+        out.push_str("  (no messages)\n");
+        return;
+    }
+    for id in messages {
+        out.push_str("  ");
+        out.push_str(id.as_str());
+        if let Some(msg) = pool.get_message(id.as_str()) {
+            out.push(' ');
+            out.push_str(&msg.summarize());
+        }
+        out.push('\n');
+    }
+}
+
+/// Write a diff block showing added (+) and removed (-) messages with summaries.
+fn format_diff(out: &mut String, pool: &ri::Pool, vs_id: &ContextId, added: &[MessageId], removed: &[MessageId]) {
+    if added.is_empty() && removed.is_empty() {
+        out.push_str("  (no changes)\n");
+        return;
+    }
+    out.push_str("  diff vs ");
+    out.push_str(vs_id.as_str());
+    out.push('\n');
+    for id in added {
+        out.push_str("  + ");
+        out.push_str(id.as_str());
+        if let Some(msg) = pool.get_message(id.as_str()) {
+            out.push(' ');
+            out.push_str(&msg.summarize());
+        }
+        out.push('\n');
+    }
+    for id in removed {
+        out.push_str("  - ");
+        out.push_str(id.as_str());
+        if let Some(msg) = pool.get_message(id.as_str()) {
+            out.push(' ');
+            out.push_str(&msg.summarize());
+        }
+        out.push('\n');
+    }
 }
 
 // ---------------------------------------------------------------------------
