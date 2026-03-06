@@ -307,7 +307,7 @@ async fn run_background_loop(
                 let msg = store.write_message(
                     &session_id,
                     Role::Assistant,
-                    vec![ContentBlock::error(e.to_string())],
+                    vec![ContentBlock::error(e.display_chain())],
                     Some(serde_json::json!({
                         "model": model.id,
                         "ts": chrono::Utc::now().to_rfc3339(),
@@ -618,7 +618,7 @@ async fn run_background_turn(
             let msg = store.write_message(
                 &session_id,
                 Role::Assistant,
-                vec![ContentBlock::error(e.to_string())],
+                vec![ContentBlock::error(e.display_chain())],
                 Some(serde_json::json!({
                     "model": model.id,
                     "ts": chrono::Utc::now().to_rfc3339(),

@@ -126,7 +126,7 @@ pub fn run<'a>(
             let mut turn = match Turn::start(provider, opts).await {
                 Ok(t) => t,
                 Err(e) => {
-                    let msg_text = e.to_string();
+                    let msg_text = e.display_chain();
                     yield AgentEvent::Error(msg_text.clone());
 
                     let assistant_msg = store.write_message(session_id,
@@ -154,7 +154,7 @@ pub fn run<'a>(
                 match result {
                     Ok(evt) => yield AgentEvent::Stream(evt),
                     Err(e) => {
-                        let msg_text = e.to_string();
+                        let msg_text = e.display_chain();
                         yield AgentEvent::Error(msg_text.clone());
                         turn_error = Some(msg_text);
                         break;

@@ -205,7 +205,7 @@ pub(crate) async fn run_loop(
         let mut turn = match Turn::start(provider, opts).await {
             Ok(t) => t,
             Err(e) => {
-                let msg_text = e.to_string();
+                let msg_text = e.display_chain();
                 let _ = tx.send(AgentEvent::Error(msg_text.clone()));
 
                 // Build and persist assistant message with error content block.
@@ -240,7 +240,7 @@ pub(crate) async fn run_loop(
                     let _ = tx.send(AgentEvent::Stream(evt));
                 }
                 Err(e) => {
-                    let msg_text = e.to_string();
+                    let msg_text = e.display_chain();
                     let _ = tx.send(AgentEvent::Error(msg_text.clone()));
                     turn_error = Some(msg_text);
                     break;
