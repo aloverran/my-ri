@@ -125,10 +125,16 @@ pub async fn run_supervisor() -> ! {
                 // Child got SIGINT too (same process group). Just wait for it.
                 tracing::info!("supervisor received ctrl-c, waiting for child to exit");
                 drop(child_stdin); // close pipe so child sees EOF
-                if let Some(status) = child_exit_rx.recv().await {
-                    std::process::exit(status.code().unwrap_or(1));
+                tokio::select! {
+                    status = child_exit_rx.recv() => {
+                        let code = status.and_then(|s| s.code()).unwrap_or(1);
+                        std::process::exit(code);
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("force exit");
+                        std::process::exit(1);
+                    }
                 }
-                std::process::exit(1);
             }
 
             Some(_) = watch_rx.recv() => {

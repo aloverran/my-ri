@@ -356,8 +356,9 @@ async fn session_events(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let session = get_or_load_session(&state, &id).await?;
     let rx = session.lock().await.events_tx.subscribe();
+    let shutdown = state.shutdown.clone();
 
-    let stream = event_stream(rx);
+    let stream = event_stream(rx, shutdown);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -826,26 +827,32 @@ async fn auth_login_status(
 
 fn event_stream(
     mut rx: broadcast::Receiver<AgentEvent>,
+    shutdown: CancellationToken,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if let Some(sse_event) = agent_event_to_sse(&event) {
-                        yield Ok(sse_event);
-                    }
-                    if matches!(event, AgentEvent::Done) {
-                        break;
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            if let Some(sse_event) = agent_event_to_sse(&event) {
+                                yield Ok(sse_event);
+                            }
+                            if matches!(event, AgentEvent::Done) {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("SSE client lagged, missed {} events", n);
+                            let event = Event::default()
+                                .event("resync")
+                                .data("{}");
+                            yield Ok(event);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("SSE client lagged, missed {} events", n);
-                    let event = Event::default()
-                        .event("resync")
-                        .data("{}");
-                    yield Ok(event);
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                _ = shutdown.cancelled() => break,
             }
         }
     }

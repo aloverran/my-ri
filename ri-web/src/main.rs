@@ -237,6 +237,15 @@ async fn main() -> Result<()> {
                 std::process::exit(42);
             }
 
+            // During axum's graceful HTTP drain, a second ctrl-c
+            // should force-exit immediately. Without this, tokio's
+            // signal handler swallows SIGINTs with nobody listening.
+            tokio::spawn(async {
+                let _ = tokio::signal::ctrl_c().await;
+                tracing::info!("force exit");
+                std::process::exit(1);
+            });
+
             // Normal shutdown: drain HTTP connections gracefully.
             let _ = server_stop_tx.send(());
         }
