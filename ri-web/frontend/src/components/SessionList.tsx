@@ -1,5 +1,5 @@
 import { createSignal, createResource, createMemo, For, Show } from 'solid-js';
-import { getSessions, createSession } from '../api';
+import { getSessions, createSession, postUpdate } from '../api';
 import { SessionSummary, relativeTime } from '../types';
 import SettingsPanel from './SettingsPanel';
 
@@ -7,6 +7,7 @@ interface SessionListProps {
   onSelect: (id: string) => void;
   logsOpen: boolean;
   onToggleLogs: () => void;
+  updateAvailable: boolean;
 }
 
 export default function SessionList(props: SessionListProps) {
@@ -50,6 +51,13 @@ export default function SessionList(props: SessionListProps) {
     <div class="session-list">
       <div class="session-list-header">
         <h1>ri</h1>
+        <Show when={props.updateAvailable}>
+          <button
+            class="update-btn"
+            onclick={() => postUpdate().catch(console.error)}
+            title="New build ready. Click to restart server."
+          >Update</button>
+        </Show>
         <button
           class={`log-toggle-btn ${props.logsOpen ? 'log-toggle-active' : ''}`}
           onclick={props.onToggleLogs}

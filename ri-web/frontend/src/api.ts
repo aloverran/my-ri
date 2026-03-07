@@ -192,10 +192,23 @@ export interface SessionDoneEvent {
 }
 
 /** Connect to the global app-wide event stream (session completions, etc). */
-export function connectGlobalSSE(onSessionDone: (event: SessionDoneEvent) => void): EventSource {
+export function connectGlobalSSE(handlers: {
+  onSessionDone: (event: SessionDoneEvent) => void;
+  onUpdateAvailable?: () => void;
+}): EventSource {
   const es = new EventSource(apiUrl('/events'));
   es.addEventListener('session_done', (e) => {
-    onSessionDone(JSON.parse((e as MessageEvent).data));
+    handlers.onSessionDone(JSON.parse((e as MessageEvent).data));
   });
+  if (handlers.onUpdateAvailable) {
+    es.addEventListener('update_available', () => {
+      handlers.onUpdateAvailable!();
+    });
+  }
   return es;
+}
+
+/** Trigger a graceful server restart (--watch mode). */
+export function postUpdate(): Promise<void> {
+  return apiRequest<void>('POST', '/update');
 }

@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/settings", get(get_settings))
         .route("/logs", get(log_events))
         .route("/events", get(global_events))
+        .route("/update", post(trigger_update))
         .route("/auth/status", get(auth_status))
         .route("/auth/login", post(auth_login))
         .route("/auth/complete", post(auth_complete))
@@ -446,6 +447,7 @@ async fn global_events(
                             if let Ok(data) = serde_json::to_string(&event) {
                                 let event_name = match &event {
                                     GlobalEvent::SessionDone { .. } => "session_done",
+                                    GlobalEvent::UpdateAvailable => "update_available",
                                 };
                                 yield Ok(Event::default().event(event_name).data(data));
                             }
@@ -526,6 +528,23 @@ fn parse_thinking(raw: &str) -> Option<ri::ThinkingLevel> {
         "xhigh" => Some(ri::ThinkingLevel::XHigh),
         _ => None,
     }
+}
+
+// -- Update (--watch restart trigger) --
+
+/// Trigger a graceful restart when a new binary is available.
+/// Returns 409 if no update is pending, 202 if the restart was initiated.
+/// The server will drain running agents, then exit with code 42 so the
+/// supervisor spawns the new binary.
+async fn trigger_update(
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, AppError> {
+    if !state.update_available.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(AppError::Conflict("No update available".into()));
+    }
+    // Idempotent: multiple clicks just re-notify.
+    state.update_trigger.notify_one();
+    Ok(StatusCode::ACCEPTED)
 }
 
 // -- Auth --

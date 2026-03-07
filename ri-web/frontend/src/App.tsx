@@ -54,6 +54,7 @@ function notifySessionDone(event: SessionDoneEvent, activeSessionId: string | nu
 export default function App() {
   const [nav, setNav] = createSignal<NavState>(readNavState());
   const [logsOpen, setLogsOpen] = createSignal(false);
+  const [updateAvailable, setUpdateAvailable] = createSignal(false);
 
   // Navigate forward (user action). Pushes onto the history stack.
   const navigate = (next: NavState) => {
@@ -75,10 +76,15 @@ export default function App() {
     return n.view === 'session' ? n.id : null;
   };
 
-  // -- Global SSE: session completion notifications --
+  // -- Global SSE: session completion notifications + update availability --
   // Single connection from the root component, lives for the lifetime of the app.
-  const globalSSE = connectGlobalSSE((event: SessionDoneEvent) => {
-    notifySessionDone(event, selectedId());
+  const globalSSE = connectGlobalSSE({
+    onSessionDone: (event: SessionDoneEvent) => {
+      notifySessionDone(event, selectedId());
+    },
+    onUpdateAvailable: () => {
+      setUpdateAvailable(true);
+    },
   });
   onCleanup(() => globalSSE.close());
 
@@ -95,6 +101,7 @@ export default function App() {
             onSelect={(id) => navigate({ view: 'session', id })}
             logsOpen={logsOpen()}
             onToggleLogs={() => setLogsOpen(!logsOpen())}
+            updateAvailable={updateAvailable()}
           />
         }>
           {(id) => (

@@ -28,3 +28,5 @@ tokio-stream = "0.1"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 async-stream = "0.3"
 async-trait = "0.1"
+notify-debouncer-mini = "0.7"
+

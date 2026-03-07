@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -25,6 +26,9 @@ pub enum GlobalEvent {
         /// Non-null for sub-agent sessions spawned by runAgent.
         parent: Option<String>,
     },
+    /// New binary built and ready. Frontend should show an update button.
+    #[serde(rename = "update_available")]
+    UpdateAvailable,
 }
 
 /// Top-level server state, shared across all handlers via Arc.
@@ -59,6 +63,12 @@ pub struct AppState {
     /// Tracks all spawned agent/turn tasks. `close()` + `wait()` used at
     /// shutdown to drain running work before the process exits.
     pub tracker: TaskTracker,
+    /// True when the supervisor has signaled that a new binary is ready.
+    /// Set by the stdin monitor, read by the /api/update endpoint.
+    pub update_available: AtomicBool,
+    /// Wakes the shutdown task to begin the update-restart sequence
+    /// (exit code 42). Only meaningful when running as a supervised child.
+    pub update_trigger: Arc<Notify>,
 }
 
 /// An OAuth login flow in progress. The provider instance must be kept alive
