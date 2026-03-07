@@ -332,6 +332,7 @@ async fn send_message(
 
     let cancel = CancellationToken::new();
     let task = agent::spawn_agent_loop(
+        &state.tracker,
         session.clone(),
         text,
         Arc::from(provider),
@@ -380,12 +381,15 @@ async fn cancel_session(
 /// anything after this point; snapshot catches everything before).
 /// A few entries at the boundary may appear twice -- harmless for a
 /// debug panel.
+///
+/// Closes promptly on shutdown so it doesn't hold the server open.
 async fn log_events(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     // Subscribe before snapshot so we don't miss events in the gap.
     let rx = state.log_tx.subscribe();
     let history = state.log_buffer.snapshot();
+    let shutdown = state.shutdown.clone();
     tracing::info!("log panel connected, replaying {} entries", history.len());
 
     let stream = async_stream::stream! {
@@ -399,16 +403,21 @@ async fn log_events(
         // Then stream live events from broadcast.
         let mut rx = rx;
         loop {
-            match rx.recv().await {
-                Ok(entry) => {
-                    if let Ok(data) = serde_json::to_string(&entry) {
-                        yield Ok(Event::default().event("log").data(data));
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(entry) => {
+                            if let Ok(data) = serde_json::to_string(&entry) {
+                                yield Ok(Event::default().event("log").data(data));
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::debug!("log SSE client lagged, missed {} entries", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::debug!("log SSE client lagged, missed {} entries", n);
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                _ = shutdown.cancelled() => break,
             }
         }
     };
@@ -419,27 +428,35 @@ async fn log_events(
 /// SSE endpoint: global app-wide events (session completions, etc).
 /// The frontend uses this to fire desktop notifications when any session
 /// finishes, without needing a per-session SSE connection for each one.
+///
+/// Closes promptly on shutdown so it doesn't hold the server open.
 async fn global_events(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.global_tx.subscribe();
+    let shutdown = state.shutdown.clone();
 
     let stream = async_stream::stream! {
         let mut rx = rx;
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if let Ok(data) = serde_json::to_string(&event) {
-                        let event_name = match &event {
-                            GlobalEvent::SessionDone { .. } => "session_done",
-                        };
-                        yield Ok(Event::default().event(event_name).data(data));
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            if let Ok(data) = serde_json::to_string(&event) {
+                                let event_name = match &event {
+                                    GlobalEvent::SessionDone { .. } => "session_done",
+                                };
+                                yield Ok(Event::default().event(event_name).data(data));
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::debug!("global SSE client lagged, missed {} events", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::debug!("global SSE client lagged, missed {} events", n);
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
+                _ = shutdown.cancelled() => break,
             }
         }
     };

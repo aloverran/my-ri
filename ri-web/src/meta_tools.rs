@@ -127,9 +127,6 @@ impl Tool for RunAgentTool {
             None => return err("ri server is shutting down"),
         };
 
-        // -- Parse inputs --
-        // context_id wins over message_ids. At least one must be provided.
-
         let message_ids: Vec<MessageId> = if let Some(cid) = input.get("context_id").and_then(|v| v.as_str()) {
             match resolve_context_messages(&app, ctx.session_id.as_ref(), cid).await {
                 Some(ids) => ids,
@@ -212,7 +209,7 @@ impl Tool for RunAgentTool {
             let provider: Arc<dyn ri::LlmProvider> = Arc::from(provider);
             let tools = app.base_tools.clone();
             let cancel_inner = cancel.clone();
-            tokio::spawn(async move {
+            app.tracker.spawn(async move {
                 let result = agent::run_loop(
                     &session,
                     provider.as_ref(),
@@ -490,7 +487,7 @@ impl Tool for RunTurnTool {
             let session = session_arc.clone();
             let provider: Arc<dyn ri::LlmProvider> = Arc::from(provider);
             let cancel_inner = cancel.clone();
-            tokio::spawn(async move {
+            app.tracker.spawn(async move {
                 let result = run_single_turn(
                     &session,
                     provider.as_ref(),

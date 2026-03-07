@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use ri::{
     ContentBlock, LlmProvider, Message, MessageId, Model, RequestOptions, Role, StreamEvent,
@@ -40,13 +41,17 @@ pub enum AgentEvent {
     Done,
 }
 
-/// Spawn the agent loop as a tokio task. Returns the JoinHandle.
+/// Spawn the agent loop as a tracked tokio task. Returns the JoinHandle.
 ///
 /// The loop writes user message, runs LLM turns, executes tools, and
 /// broadcasts all events through the session's broadcast channel.
 /// When finished, it clears `current_run` in the SessionState and
 /// emits a global SessionDone event for desktop notifications.
+///
+/// The task is registered with the `tracker` so the server can wait
+/// for all running agents during graceful shutdown.
 pub fn spawn_agent_loop(
+    tracker: &TaskTracker,
     session: Arc<Mutex<SessionState>>,
     user_text: String,
     provider: Arc<dyn LlmProvider>,
@@ -56,7 +61,7 @@ pub fn spawn_agent_loop(
     cancel: CancellationToken,
     global_tx: tokio::sync::broadcast::Sender<GlobalEvent>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    tracker.spawn(async move {
         let result = run_agent_loop(
             &session,
             &user_text,

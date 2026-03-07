@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::agent::AgentEvent;
 use crate::tracing_broadcast::{LogBuffer, LogEntry};
@@ -50,6 +51,14 @@ pub struct AppState {
     pub log_buffer: Arc<LogBuffer>,
     /// Global event broadcast for app-wide notifications (session done, etc).
     pub global_tx: broadcast::Sender<GlobalEvent>,
+    /// Cancelled on first ctrl-c. Signals that the server is draining, but does
+    /// not reject new agent spawns -- tasks started during drain are still
+    /// tracked and the process waits for them. Running agents always finish
+    /// naturally.
+    pub shutdown: CancellationToken,
+    /// Tracks all spawned agent/turn tasks. `close()` + `wait()` used at
+    /// shutdown to drain running work before the process exits.
+    pub tracker: TaskTracker,
 }
 
 /// An OAuth login flow in progress. The provider instance must be kept alive
