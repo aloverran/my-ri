@@ -661,7 +661,7 @@ pub async fn run(
     let sessions_dir = Store::default_dir()?;
     let mut store = Store::new(sessions_dir);
     store.load_all()?;
-    let file_id = store.create_session(&session_name, cwd_str, None)?;
+    let file_id = store.create_session(&session_name, cwd_str, None, None)?;
     let system_prompt = {
         let context_files = ri_tools::resources::discover_context_files(&cwd);
         let mut parts = vec![

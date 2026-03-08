@@ -19,7 +19,6 @@
 //! only the base tools (no recursion into meta-tools).
 
 use std::collections::{HashSet, VecDeque};
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
@@ -29,7 +28,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use ri::{
-    ContentBlock, ContextId, Message, MessageId, Role, SessionHeader, SessionId, Store,
+    ContentBlock, ContextId, Message, MessageId, Role, SessionId, Store,
     ThinkingLevel, Tool, ToolContext, ToolOutput,
 };
 
@@ -274,28 +273,25 @@ async fn setup_session(
         }
 
         // Try loading from disk.
-        let path = app.sessions_dir.join(format!("{}.jsonl", id));
-        if path.exists() {
-            let header = read_header(&path)?;
-            let session_cwd = header
-                .cwd
-                .map(PathBuf::from)
+        let mut store = Store::new(app.sessions_dir.clone());
+        store.load_all()?;
+        if let Some(session) = store.get_session(id.as_str()) {
+            let session_cwd = session.cwd.as_ref()
+                .map(|s| PathBuf::from(s))
                 .unwrap_or_else(|| fallback_cwd.clone());
-            let mut store = Store::new(app.sessions_dir.clone());
-            store.load_all()?;
             let sid = SessionId::from(id.as_str());
             let (events_tx, _) = broadcast::channel(256);
             let state = SessionState {
-                store,
                 message_ids: message_ids.to_vec(),
                 cwd: session_cwd,
-                name: header.session,
-                ts: header.ts,
+                name: session.name.clone(),
+                ts: session.ts.clone(),
                 file_id: sid.clone(),
-                parent: header.parent.map(SessionId::from),
+                parent: session.parent.clone(),
                 events_tx,
                 current_run: None,
                 title_gen_seq: 0,
+                store,
             };
             let arc = Arc::new(Mutex::new(state));
             sessions.insert(id.clone(), arc.clone());
@@ -310,7 +306,8 @@ async fn setup_session(
     let cwd_str = fallback_cwd.to_string_lossy().to_string();
     let mut store = Store::new(app.sessions_dir.clone());
     store.load_all()?;
-    let file_id = store.create_session(&name, &cwd_str, parent)?;
+    let parent_file = parent.and_then(|p| store.get_session(p.as_str()).map(|s| s.file.clone()));
+    let file_id = store.create_session(&name, &cwd_str, parent, parent_file.as_deref())?;
 
     let ts = chrono::Utc::now().to_rfc3339();
     let (events_tx, _) = broadcast::channel(256);
@@ -991,11 +988,10 @@ impl Tool for ReadMessageTool {
         for (_sid, session) in sessions.iter() {
             let lock = session.lock().await;
             if let Some(msg) = lock.store.pool.get_message(message_id) {
-                let text = serde_json::to_string_pretty(msg).unwrap_or_default();
                 return ToolOutput {
-                    text,
+                    text: msg.display(),
                     is_error: false,
-                    details: Some(serde_json::to_value(msg).unwrap_or_default()),
+                    details: None,
                 };
             }
         }
@@ -1003,14 +999,11 @@ impl Tool for ReadMessageTool {
 
         // Fall back to searching on disk.
         match find_message_on_disk(message_id, &app.sessions_dir) {
-            Some(msg) => {
-                let text = serde_json::to_string_pretty(&msg).unwrap_or_default();
-                ToolOutput {
-                    text,
-                    is_error: false,
-                    details: Some(serde_json::to_value(&msg).unwrap_or_default()),
-                }
-            }
+            Some(msg) => ToolOutput {
+                text: msg.display(),
+                is_error: false,
+                details: None,
+            },
             None => err(&format!("message '{}' not found", message_id)),
         }
     }
@@ -1301,14 +1294,6 @@ fn parse_role(s: &str) -> Option<Role> {
         "system" => Some(Role::System),
         _ => None,
     }
-}
-
-fn read_header(path: &std::path::Path) -> eyre::Result<SessionHeader> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    Ok(serde_json::from_str(line.trim())?)
 }
 
 /// Search all session files for a message with the given ID.

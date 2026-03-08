@@ -192,8 +192,9 @@ impl Tool for RunAgentTool {
         let name = session_id.unwrap_or_else(|| ri::gen_id());
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
         let parent = ctx.session_id.as_ref();
+        let parent_file = parent.and_then(|p| store.get_session(p.as_str()).map(|s| s.file.clone()));
         let mut msg_ids = message_ids;
-        let file_id = match store.create_session(&name, &cwd_str, parent) {
+        let file_id = match store.create_session(&name, &cwd_str, parent, parent_file.as_deref()) {
             Ok(v) => v,
             Err(e) => return err(&format!("failed to create session: {}", e)),
         };
@@ -524,8 +525,9 @@ impl Tool for RunTurnTool {
         let name = session_id.unwrap_or_else(|| ri::gen_id());
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
         let parent = ctx.session_id.as_ref();
+        let parent_file = parent.and_then(|p| store.get_session(p.as_str()).map(|s| s.file.clone()));
         let mut msg_ids = message_ids;
-        let file_id = match store.create_session(&name, &cwd_str, parent) {
+        let file_id = match store.create_session(&name, &cwd_str, parent, parent_file.as_deref()) {
             Ok(v) => v,
             Err(e) => return err(&format!("failed to create session: {}", e)),
         };
@@ -856,14 +858,11 @@ impl Tool for ReadMessageTool {
         };
 
         match find_message_on_disk(message_id, &self.sessions_dir) {
-            Some(msg) => {
-                let text = serde_json::to_string_pretty(&msg).unwrap_or_default();
-                ToolOutput {
-                    text,
-                    is_error: false,
-                    details: Some(serde_json::to_value(&msg).unwrap_or_default()),
-                }
-            }
+            Some(msg) => ToolOutput {
+                text: msg.display(),
+                is_error: false,
+                details: None,
+            },
             None => err(&format!("message '{}' not found", message_id)),
         }
     }

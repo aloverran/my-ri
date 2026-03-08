@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
                 .ok_or_else(|| eyre::eyre!("working directory contains non-UTF-8 characters"))?;
             let mut store = Store::new(sessions_dir.clone());
             store.load_all()?;
-            let file_id = store.create_session("print", cwd_str, None)?;
+            let file_id = store.create_session("print", cwd_str, None, None)?;
             let system_prompt = {
                 let context_files = ri_tools::resources::discover_context_files(&cwd_path);
                 let mut parts = vec![

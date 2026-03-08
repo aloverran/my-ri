@@ -55,7 +55,7 @@ pub async fn run(
         );
         return;
     }
-    let file_id = match store.create_session("rpc", &cwd_str, None) {
+    let file_id = match store.create_session("rpc", &cwd_str, None, None) {
         Ok(id) => id,
         Err(e) => {
             output_json(
