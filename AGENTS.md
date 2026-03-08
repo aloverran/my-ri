@@ -1,0 +1,3 @@
+This folder contains my own configuration of ri, split into ri-cli and ri-web. I primarily use ri-web but I try to keep ri-cli functional. 
+
+We do not care about backwards compatibility for our ri projects. Ri is currently unstable so the formats are changing rapidly. We don't want to *crash* or perform bad behavior if we encounter old data (it's just another class of corrupted / ill-formed data) but we only care about new sessions going forward for now. Old sessions can be dropped, etc.
