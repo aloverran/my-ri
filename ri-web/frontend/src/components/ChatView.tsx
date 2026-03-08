@@ -6,6 +6,47 @@ import { Message, Usage, DisplayMode, fmtTokens } from '../types';
 import MessageView, { ToolResultInfo } from './MessageView';
 import SubSessionsPanel from './SubSessionsPanel';
 
+/// Copy text to clipboard, with fallback for insecure (non-HTTPS) contexts.
+/// The modern clipboard API requires a secure context. When served over plain
+/// HTTP (eg. ri-web exposed on a LAN), we fall back to the legacy
+/// execCommand('copy') trick with an offscreen textarea.
+function copyToClipboard(text: string): Promise<boolean> {
+  // Explicitly check secure context. Some browsers define navigator.clipboard
+  // on HTTP but reject the promise, which would push our fallback into an
+  // async microtask where the user-gesture is lost and execCommand fails.
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, () => fallbackCopy(text));
+  }
+  return Promise.resolve(fallbackCopy(text));
+}
+
+function fallbackCopy(text: string): boolean {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+
+  // iOS Safari ignores textarea.select(); needs range-based selection.
+  if (/ipad|iphone/i.test(navigator.userAgent)) {
+    textarea.focus();
+    const range = document.createRange();
+    range.selectNodeContents(textarea);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    textarea.setSelectionRange(0, 999999);
+  } else {
+    textarea.select();
+  }
+
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* swallow */ }
+  document.body.removeChild(textarea);
+  return ok;
+}
+
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const;
 type ThinkingLevel = typeof THINKING_LEVELS[number];
 
@@ -283,10 +324,17 @@ export default function ChatView(props: ChatViewProps) {
   };
 
   const copySessionId = (el: HTMLElement) => {
-    navigator.clipboard.writeText(props.sessionId);
+    if (el.textContent === 'copied!') return;
     const orig = el.textContent;
-    el.textContent = 'copied!';
-    setTimeout(() => { el.textContent = orig; }, 800);
+    // Lock width to prevent flexbox jitter when text shortens to "copied!"
+    const w = el.getBoundingClientRect().width;
+    el.style.width = `${w}px`;
+
+    copyToClipboard(props.sessionId).then(ok => {
+      if (!ok) { el.style.width = ''; return; }
+      el.textContent = 'copied!';
+      setTimeout(() => { el.textContent = orig; el.style.width = ''; }, 800);
+    });
   };
 
   return (
@@ -295,7 +343,7 @@ export default function ChatView(props: ChatViewProps) {
       <header class="chat-header">
         <button class="back" onclick={props.onBack}>{'\u2190'}</button>
         <span class="name">{store.name || '...'}</span>
-        <span class="session-id" onclick={(e) => copySessionId(e.currentTarget)} title="Click to copy">{props.sessionId}</span>
+        <span class="session-id" onclick={(e) => copySessionId(e.currentTarget)} title={props.sessionId}>{props.sessionId}</span>
         <span class={`status ${store.status}`}>
           {store.status}
         </span>

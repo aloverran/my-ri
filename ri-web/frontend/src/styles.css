@@ -407,7 +407,10 @@ input:disabled, textarea:disabled { opacity: 0.5; }
   font-size: var(--size-xs);
   color: var(--text-2);
   cursor: pointer;
-  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .chat-header .session-id:hover { color: var(--text-1); }
 .chat-header .name {

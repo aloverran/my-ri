@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ri diff</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --bg2: #16213e;
+    --bg3: #0f3460;
+    --fg: #c8d6e5;
+    --fg2: #8395a7;
+    --add: #0abf53;
+    --add-bg: rgba(10,191,83,0.08);
+    --rm: #ee5a6a;
+    --rm-bg: rgba(238,90,106,0.07);
+    --accent: #4fc3f7;
+    --orange: #ffb347;
+    --purple: #bb86fc;
+    --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); padding: 24px; min-height: 100vh; }
+
+  .container { max-width: 900px; margin: 0 auto; }
+
+  /* -- Header -- */
+  .diff-header { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+  .diff-header h1 { font-size: 15px; font-weight: 500; color: var(--fg2); letter-spacing: 0.03em; }
+  .diff-header .stats { font-family: var(--mono); font-size: 12px; display: flex; gap: 10px; }
+  .stat-add { color: var(--add); }
+  .stat-rm { color: var(--rm); }
+  .stat-files { color: var(--fg2); }
+
+  /* -- File card -- */
+  .file-card {
+    background: var(--bg2);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .file-title {
+    padding: 10px 16px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    background: rgba(0,0,0,0.2);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .file-title .tag {
+    font-family: var(--sans);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .tag-tsx { background: rgba(79,195,247,0.15); color: var(--accent); }
+  .tag-css { background: rgba(187,134,252,0.15); color: var(--purple); }
+
+  /* -- Section within a file -- */
+  .section {
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .section:last-child { border-bottom: none; }
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--fg2);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-label .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+  }
+  .dot-add { background: var(--add); }
+  .dot-change { background: var(--orange); }
+  .dot-rm { background: var(--rm); }
+
+  /* -- Code blocks -- */
+  .codeblock {
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.65;
+    padding: 10px 12px;
+    border-radius: 5px;
+    background: rgba(0,0,0,0.25);
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .codeblock .kw { color: var(--purple); }
+  .codeblock .fn { color: #82aaff; }
+  .codeblock .str { color: #c3e88d; }
+  .codeblock .cmt { color: #546e7a; font-style: italic; }
+  .codeblock .typ { color: var(--accent); }
+  .codeblock .num { color: var(--orange); }
+  .codeblock .op { color: #89ddff; }
+  .codeblock .param { color: #f78c6c; }
+  .codeblock .dom { color: #ffcb6b; }
+
+  /* -- Diff lines -- */
+  .diff-line { display: flex; gap: 0; }
+  .diff-gutter {
+    width: 20px;
+    flex-shrink: 0;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.65;
+    user-select: none;
+    padding-top: 0.15em;
+  }
+  .diff-content {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.65;
+    padding: 0 8px;
+    border-radius: 3px;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .diff-add .diff-gutter { color: var(--add); }
+  .diff-add .diff-content { background: var(--add-bg); color: var(--fg); }
+  .diff-rm .diff-gutter { color: var(--rm); }
+  .diff-rm .diff-content { background: var(--rm-bg); color: var(--fg); text-decoration: line-through; opacity: 0.6; }
+
+  /* -- Visual diagram -- */
+  .diagram {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .flex-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    height: 26px;
+  }
+  .flex-item {
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.1);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .flex-item.shrink0 { border-color: rgba(79,195,247,0.3); background: rgba(79,195,247,0.06); color: var(--accent); }
+  .flex-item.flex1 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; border-color: rgba(255,255,255,0.08); color: var(--fg2); }
+  .flex-item.truncates { border-color: rgba(10,191,83,0.4); background: rgba(10,191,83,0.06); color: var(--add); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .flex-item.was-bad { border-color: rgba(238,90,106,0.4); background: rgba(238,90,106,0.06); color: var(--rm); white-space: nowrap; }
+  .flex-label { font-size: 10px; color: var(--fg2); width: 50px; flex-shrink: 0; text-align: right; margin-right: 6px; }
+  .flex-prop { font-size: 9px; opacity: 0.5; }
+
+  /* -- Flow diagram -- */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 8px 0;
+    flex-wrap: wrap;
+  }
+  .flow-node {
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    white-space: nowrap;
+  }
+  .flow-arrow { color: var(--fg2); padding: 0 6px; font-size: 13px; }
+  .flow-node.secure { border-color: rgba(79,195,247,0.3); color: var(--accent); }
+  .flow-node.fallback { border-color: rgba(255,179,71,0.3); color: var(--orange); }
+  .flow-node.result { border-color: rgba(10,191,83,0.3); color: var(--add); }
+
+  .guard-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+  }
+  .guard {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .guard-icon { font-size: 13px; width: 18px; text-align: center; flex-shrink: 0; }
+  .guard-text { color: var(--fg); }
+  .guard-why { color: var(--fg2); font-size: 10px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="diff-header">
+  <h1>working changes</h1>
+  <div class="stats">
+    <span class="stat-files">2 files</span>
+    <span class="stat-add">+57</span>
+    <span class="stat-rm">-5</span>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- FILE 1: styles.css                           -->
+<!-- ============================================ -->
+<div class="file-card">
+  <div class="file-title">
+    <span class="tag tag-css">css</span>
+    styles.css &mdash; .chat-header .session-id
+  </div>
+
+  <div class="section">
+    <div class="section-label"><span class="dot dot-change"></span> flex overflow fix</div>
+    <div style="padding: 0 0 10px 0;">
+      <div class="diff-line diff-rm">
+        <div class="diff-gutter">&minus;</div>
+        <div class="diff-content">flex-shrink: <span class="num">0</span>;</div>
+      </div>
+      <div class="diff-line diff-add">
+        <div class="diff-gutter">+</div>
+        <div class="diff-content">overflow: hidden;</div>
+      </div>
+      <div class="diff-line diff-add">
+        <div class="diff-gutter">+</div>
+        <div class="diff-content">text-overflow: ellipsis;</div>
+      </div>
+      <div class="diff-line diff-add">
+        <div class="diff-gutter">+</div>
+        <div class="diff-content">white-space: nowrap;</div>
+      </div>
+      <div class="diff-line diff-add">
+        <div class="diff-gutter">+</div>
+        <div class="diff-content">min-width: <span class="num">0</span>;</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visual: flex layout diagram -->
+  <div class="section">
+    <div class="section-label">header layout on mobile</div>
+    <div class="diagram">
+      <div class="flex-row">
+        <div class="flex-label" style="color:var(--rm)">before</div>
+        <div class="flex-item shrink0" style="width:28px">&larr;</div>
+        <div class="flex-item flex1">session name...</div>
+        <div class="flex-item was-bad">2026-03-08_052608_new-session <span class="flex-prop">shrink:0 &mdash; pushes &rarr;</span></div>
+        <div class="flex-item shrink0" style="opacity:0.3">compact</div>
+        <div class="flex-item shrink0" style="opacity:0.3">sub</div>
+        <div class="flex-item shrink0" style="opacity:0.15">log &nbsp;&#x26a0;</div>
+      </div>
+      <div class="flex-row">
+        <div class="flex-label" style="color:var(--add)">after</div>
+        <div class="flex-item shrink0" style="width:28px">&larr;</div>
+        <div class="flex-item flex1">session name...</div>
+        <div class="flex-item truncates">2026-03-08_0526... <span class="flex-prop">truncates</span></div>
+        <div class="flex-item shrink0">compact</div>
+        <div class="flex-item shrink0">sub</div>
+        <div class="flex-item shrink0">log</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================ -->
+<!-- FILE 2: ChatView.tsx                         -->
+<!-- ============================================ -->
+<div class="file-card">
+  <div class="file-title">
+    <span class="tag tag-tsx">tsx</span>
+    ChatView.tsx
+  </div>
+
+  <!-- New: copyToClipboard -->
+  <div class="section">
+    <div class="section-label"><span class="dot dot-add"></span> new &mdash; copyToClipboard(text): Promise&lt;bool&gt;</div>
+    <div class="codeblock"><span class="kw">function</span> <span class="fn">copyToClipboard</span>(<span class="param">text</span>: <span class="typ">string</span>): <span class="typ">Promise&lt;boolean&gt;</span> {
+  <span class="kw">if</span> (<span class="dom">window</span>.isSecureContext && <span class="dom">navigator</span>.clipboard?.<span class="fn">writeText</span>) {
+    <span class="kw">return</span> clipboard.<span class="fn">writeText</span>(text).<span class="fn">then</span>(<span class="op">() =></span> <span class="num">true</span>, <span class="op">() =></span> <span class="fn">fallbackCopy</span>(text));
+  }
+  <span class="kw">return</span> Promise.<span class="fn">resolve</span>(<span class="fn">fallbackCopy</span>(text));  <span class="cmt">// sync path -- preserves user gesture</span>
+}</div>
+
+    <!-- Flow diagram -->
+    <div style="padding: 8px 0 4px 0;">
+      <div class="flow">
+        <div class="flow-node">click</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node secure">isSecureContext?</div>
+        <div class="flow-arrow">y&rarr;</div>
+        <div class="flow-node secure">clipboard.writeText</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node result">ok</div>
+      </div>
+      <div class="flow" style="padding-left: 164px;">
+        <div class="flow-arrow">n&darr;</div>
+        <div class="flow-node fallback">fallbackCopy (sync)</div>
+        <div class="flow-arrow">&rarr;</div>
+        <div class="flow-node result">ok</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- New: fallbackCopy -->
+  <div class="section">
+    <div class="section-label"><span class="dot dot-add"></span> new &mdash; fallbackCopy(text): bool</div>
+    <div class="codeblock"><span class="kw">function</span> <span class="fn">fallbackCopy</span>(<span class="param">text</span>): <span class="typ">boolean</span> {
+  textarea = <span class="dom">document</span>.<span class="fn">createElement</span>(<span class="str">'textarea'</span>)
+  textarea.value = text
+  textarea.readonly, position: fixed, left: <span class="num">-9999px</span>
+  <span class="dom">document</span>.body.<span class="fn">appendChild</span>(textarea)
+
+  <span class="kw">if</span> (<span class="str">/ipad|iphone/i</span>) {
+    textarea.<span class="fn">focus</span>()                <span class="cmt">// required for iOS to register</span>
+    range = <span class="dom">document</span>.<span class="fn">createRange</span>()
+    range.<span class="fn">selectNodeContents</span>(textarea)
+    sel.<span class="fn">removeAllRanges</span>(); sel.<span class="fn">addRange</span>(range)
+    textarea.<span class="fn">setSelectionRange</span>(<span class="num">0</span>, <span class="num">999999</span>)
+  } <span class="kw">else</span> {
+    textarea.<span class="fn">select</span>()
+  }
+
+  ok = <span class="dom">document</span>.<span class="fn">execCommand</span>(<span class="str">'copy'</span>)
+  <span class="dom">document</span>.body.<span class="fn">removeChild</span>(textarea)
+  <span class="kw">return</span> ok
+}</div>
+  </div>
+
+  <!-- Changed: copySessionId -->
+  <div class="section">
+    <div class="section-label"><span class="dot dot-change"></span> changed &mdash; copySessionId handler</div>
+
+    <div style="padding-bottom: 8px; font-size: 12px; color: var(--fg2);">Guards and UX fixes added:</div>
+    <div class="guard-list">
+      <div class="guard">
+        <div class="guard-icon" style="color:var(--add)">&#x2795;</div>
+        <div class="guard-text"><code>if (el.textContent === 'copied!') return</code></div>
+        <div class="guard-why">&larr; double-click corruption</div>
+      </div>
+      <div class="guard">
+        <div class="guard-icon" style="color:var(--add)">&#x2795;</div>
+        <div class="guard-text"><code>el.style.width = getBoundingClientRect().width</code></div>
+        <div class="guard-why">&larr; lock width, prevent jitter</div>
+      </div>
+      <div class="guard">
+        <div class="guard-icon" style="color:var(--orange)">&#x2194;</div>
+        <div class="guard-text"><code>navigator.clipboard.writeText</code> &rarr; <code>copyToClipboard()</code></div>
+        <div class="guard-why">&larr; HTTP fallback</div>
+      </div>
+      <div class="guard">
+        <div class="guard-icon" style="color:var(--add)">&#x2795;</div>
+        <div class="guard-text"><code>el.style.width = ''</code> on restore</div>
+        <div class="guard-why">&larr; unlock width after 800ms</div>
+      </div>
+    </div>
+
+    <div class="codeblock" style="margin-top: 6px;"><span class="kw">const</span> <span class="fn">copySessionId</span> = (<span class="param">el</span>) => {
+  <span class="kw">if</span> (el.textContent === <span class="str">'copied!'</span>) <span class="kw">return</span>       <span class="cmt">// NEW: double-click guard</span>
+  orig = el.textContent
+  el.style.width = el.<span class="fn">getBoundingClientRect</span>().width  <span class="cmt">// NEW: lock width</span>
+
+  <span class="fn">copyToClipboard</span>(sessionId).<span class="fn">then</span>(ok => {       <span class="cmt">// CHANGED: was navigator.clipboard</span>
+    <span class="kw">if</span> (!ok) { el.style.width = <span class="str">''</span>; <span class="kw">return</span> }
+    el.textContent = <span class="str">'copied!'</span>
+    <span class="fn">setTimeout</span>(() => { el.textContent = orig; el.style.width = <span class="str">''</span> }, <span class="num">800</span>)
+  })
+}</div>
+  </div>
+
+  <!-- Changed: title attr -->
+  <div class="section">
+    <div class="section-label"><span class="dot dot-change"></span> changed &mdash; session-id span</div>
+    <div style="padding: 0;">
+      <div class="diff-line diff-rm">
+        <div class="diff-gutter">&minus;</div>
+        <div class="diff-content">title=<span class="str">"Click to copy"</span></div>
+      </div>
+      <div class="diff-line diff-add">
+        <div class="diff-gutter">+</div>
+        <div class="diff-content">title={<span class="param">props</span>.sessionId}  <span class="cmt">// hover shows full ID when truncated</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
