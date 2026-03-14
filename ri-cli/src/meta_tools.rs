@@ -1,6 +1,6 @@
 //! Meta-tools for orchestrating ri from within an agent loop.
 //!
-//! Six tools organized by function:
+//! Seven tools organized by function:
 //!
 //! Read:
 //! - `readContextGraph`: DAG neighborhood explorer
@@ -9,6 +9,7 @@
 //! Write (the context algebra primitives):
 //! - `appendMessage`: create a message and advance a context in one step
 //! - `createContext`: compose a context from any set of message IDs
+//! - `updateSession`: re-point a session at a different context
 //!
 //! Execute:
 //! - `runTurn`: single LLM call (no tools, native capabilities enabled)
@@ -53,7 +54,10 @@ pub fn create(sessions_dir: PathBuf) -> Vec<Box<dyn Tool>> {
         Box::new(AppendMessageTool {
             sessions_dir: sessions_dir.clone(),
         }),
-        Box::new(CreateContextTool { sessions_dir }),
+        Box::new(CreateContextTool {
+            sessions_dir: sessions_dir.clone(),
+        }),
+        Box::new(UpdateSessionTool { sessions_dir }),
     ]
 }
 
@@ -1068,6 +1072,87 @@ impl Tool for CreateContextTool {
             text: format!("Created context [{}] ({} messages)", id, context.messages.len()),
             is_error: false,
             details: Some(json!({ "context_id": id })),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// updateSession
+// ---------------------------------------------------------------------------
+
+/// Re-point a session at a different context. CLI version: loads a fresh
+/// store from disk each call. No in-memory session state to coordinate.
+struct UpdateSessionTool {
+    sessions_dir: PathBuf,
+}
+
+#[async_trait]
+impl Tool for UpdateSessionTool {
+    fn name(&self) -> &str {
+        "updateSession"
+    }
+
+    fn description(&self) -> &str {
+        "Update a session's head to point at a different context. The session \
+         is a pointer (like a git branch) and this moves it. Use after \
+         createContext or appendMessage to aim a session at the resulting \
+         context."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session to update."
+                },
+                "context_id": {
+                    "type": "string",
+                    "description": "The context to point the session at."
+                }
+            },
+            "required": ["session_id", "context_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, _ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
+        let session_id = match input.get("session_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'session_id' parameter"),
+        };
+        let context_id = match input.get("context_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'context_id' parameter"),
+        };
+
+        let mut store = Store::new(self.sessions_dir.clone());
+        if let Err(e) = store.load_all() {
+            return err(&format!("failed to load store: {}", e));
+        }
+
+        let sid = SessionId::from(session_id.as_str());
+        let cid = ContextId::from(context_id.as_str());
+
+        if store.get_session(sid.as_str()).is_none() {
+            return err(&format!("session '{}' not found", session_id));
+        }
+
+        if store.pool.get_context(cid.as_str()).is_none() {
+            return err(&format!("context '{}' not found", context_id));
+        }
+
+        if let Err(e) = store.update_head(&sid, &cid) {
+            return err(&format!("failed to update session head: {}", e));
+        }
+
+        ToolOutput {
+            text: format!("Updated session [{}] -> context [{}]", session_id, context_id),
+            is_error: false,
+            details: Some(json!({
+                "session_id": session_id,
+                "context_id": context_id,
+            })),
         }
     }
 }

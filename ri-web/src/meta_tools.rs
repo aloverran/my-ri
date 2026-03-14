@@ -1,6 +1,6 @@
 //! Meta-tools for orchestrating ri from within an agent loop.
 //!
-//! Six tools organized by function:
+//! Seven tools organized by function:
 //!
 //! Read:
 //! - `readContextGraph`: DAG neighborhood explorer
@@ -9,6 +9,7 @@
 //! Write (the context algebra primitives):
 //! - `appendMessage`: create a message and advance a context in one step
 //! - `createContext`: compose a context from any set of message IDs
+//! - `updateSession`: re-point a session at a different context
 //!
 //! Execute:
 //! - `runTurn`: single LLM call (no tools, native capabilities enabled)
@@ -49,7 +50,8 @@ pub fn create(app: Weak<AppState>) -> Vec<Arc<dyn Tool>> {
         Arc::new(ReadContextGraphTool { app: app.clone() }),
         Arc::new(ReadMessageTool { app: app.clone() }),
         Arc::new(AppendMessageTool { app: app.clone() }),
-        Arc::new(CreateContextTool { app }),
+        Arc::new(CreateContextTool { app: app.clone() }),
+        Arc::new(UpdateSessionTool { app }),
     ]
 }
 
@@ -1236,6 +1238,203 @@ impl Tool for CreateContextTool {
             details: Some(json!({ "context_id": id })),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// updateSession
+// ---------------------------------------------------------------------------
+
+/// Re-point a session at a different context.
+///
+/// This is the complement to `createContext` and `appendMessage`: those
+/// create new contexts in the DAG, this one moves the session pointer.
+/// Together they give full control over the context graph.
+struct UpdateSessionTool {
+    app: Weak<AppState>,
+}
+
+#[async_trait]
+impl Tool for UpdateSessionTool {
+    fn name(&self) -> &str {
+        "updateSession"
+    }
+
+    fn description(&self) -> &str {
+        "Update a session's head to point at a different context. The session \
+         is a pointer (like a git branch) and this moves it. Use after \
+         createContext or appendMessage to aim a session at the resulting \
+         context. Rejects if the target session is currently running an \
+         agent loop."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session to update."
+                },
+                "context_id": {
+                    "type": "string",
+                    "description": "The context to point the session at."
+                }
+            },
+            "required": ["session_id", "context_id"]
+        })
+    }
+
+    async fn run(&self, input: Value, ctx: ToolContext, _cancel: CancellationToken) -> ToolOutput {
+        let app = match self.app.upgrade() {
+            Some(a) => a,
+            None => return err("ri server is shutting down"),
+        };
+
+        let session_id = match input.get("session_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'session_id' parameter"),
+        };
+        let context_id = match input.get("context_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return err("missing 'context_id' parameter"),
+        };
+
+        // Resolve the context. Check the calling session's pool first (the
+        // caller likely just created it with createContext), then the target
+        // session's pool, then fall back to disk.
+        let context_messages = match resolve_context_for_update(
+            &app, ctx.session_id.as_ref(), &session_id, &context_id,
+        ).await {
+            Some(msgs) => msgs,
+            None => return err(&format!("context '{}' not found", context_id)),
+        };
+
+        // Find the target session in memory.
+        let sessions = app.sessions.read().await;
+        if let Some(target) = sessions.get(&session_id) {
+            let mut lock = target.lock().await;
+            if lock.is_running() {
+                return err(&format!(
+                    "session '{}' is currently running, wait for it to finish", session_id
+                ));
+            }
+
+            // Copy the context and its messages into the target's pool if
+            // they came from a different session (cross-session update).
+            // Without this, the target's pool.resolve() would silently
+            // skip messages it can't find.
+            if let Some(caller_sid) = ctx.session_id.as_ref() {
+                if caller_sid.as_str() != session_id {
+                    let caller_sessions = &sessions;
+                    if let Some(caller) = caller_sessions.get(caller_sid.as_str()) {
+                        if let Ok(caller_lock) = caller.try_lock() {
+                            // Copy context object.
+                            if let Some(ctx_obj) = caller_lock.store.pool.get_context(&context_id) {
+                                lock.store.pool.put_context(ctx_obj.clone());
+                            }
+                            // Copy any messages the target doesn't have.
+                            for mid in &context_messages {
+                                if lock.store.pool.get_message(mid.as_str()).is_none() {
+                                    if let Some(msg) = caller_lock.store.pool.get_message(mid.as_str()) {
+                                        lock.store.pool.put_message(msg.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let sid = lock.file_id.clone();
+            let cid = ContextId::from(context_id.as_str());
+
+            // Update the in-memory working set from the context.
+            lock.message_ids = context_messages;
+
+            if let Err(e) = lock.store.update_head(&sid, &cid) {
+                return err(&format!("failed to update session head: {}", e));
+            }
+
+            return ToolOutput {
+                text: format!("Updated session [{}] -> context [{}]", session_id, context_id),
+                is_error: false,
+                details: Some(json!({
+                    "session_id": session_id,
+                    "context_id": context_id,
+                })),
+            };
+        }
+        drop(sessions);
+
+        // Session not in memory -- update on disk directly.
+        let mut store = Store::new(app.sessions_dir.clone());
+        if let Err(e) = store.load_all() {
+            return err(&format!("failed to load store: {}", e));
+        }
+
+        let sid = SessionId::from(session_id.as_str());
+        let cid = ContextId::from(context_id.as_str());
+
+        if store.get_session(sid.as_str()).is_none() {
+            return err(&format!("session '{}' not found", session_id));
+        }
+
+        if store.pool.get_context(cid.as_str()).is_none() {
+            return err(&format!("context '{}' not found", context_id));
+        }
+
+        if let Err(e) = store.update_head(&sid, &cid) {
+            return err(&format!("failed to update session head: {}", e));
+        }
+
+        ToolOutput {
+            text: format!("Updated session [{}] -> context [{}]", session_id, context_id),
+            is_error: false,
+            details: Some(json!({
+                "session_id": session_id,
+                "context_id": context_id,
+            })),
+        }
+    }
+}
+
+/// Resolve a context's message list for updateSession. Searches in order:
+/// calling session pool, target session pool, disk.
+async fn resolve_context_for_update(
+    app: &AppState,
+    caller_sid: Option<&SessionId>,
+    target_sid: &str,
+    context_id: &str,
+) -> Option<Vec<MessageId>> {
+    let sessions = app.sessions.read().await;
+
+    // Try the caller's pool first (most likely location -- they just created it).
+    if let Some(sid) = caller_sid {
+        if let Some(session) = sessions.get(sid.as_str()) {
+            if let Ok(lock) = session.try_lock() {
+                if let Some(ctx) = lock.store.pool.get_context(context_id) {
+                    return Some(ctx.messages.clone());
+                }
+            }
+        }
+    }
+
+    // Try the target session's pool.
+    if let Some(session) = sessions.get(target_sid) {
+        if let Ok(lock) = session.try_lock() {
+            if let Some(ctx) = lock.store.pool.get_context(context_id) {
+                return Some(ctx.messages.clone());
+            }
+        }
+    }
+
+    drop(sessions);
+
+    // Fall back to disk.
+    let mut store = Store::new(app.sessions_dir.clone());
+    store.load_all().ok()?;
+    let ctx = store.pool.get_context(context_id)?;
+    Some(ctx.messages.clone())
 }
 
 // ---------------------------------------------------------------------------
